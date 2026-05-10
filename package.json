@@ -1,0 +1,16 @@
+{
+  "name": "mypry",
+  "version": "0.1.0",
+  "description": "A pry-style remote debugger for Node, with a JSON-stdio mode for LLM agents.",
+  "main": "lib/pry.js",
+  "bin": {
+    "mypry": "bin/mypry.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "example": "node examples/test.js"
+  },
+  "license": "MIT"
+}
