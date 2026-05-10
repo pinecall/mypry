@@ -82,6 +82,8 @@ class DebuggerSession {
     this.currentPause = null        // {callFrames, reason, ...}
     this.pauseListeners = []
     this.onConsole = null           // callback for console output forwarding
+    this.breakpoints = new Map()    // id -> {file, line, cdpId}
+    this._nextBpId = 0
   }
 
   async init() {
@@ -173,6 +175,37 @@ class DebuggerSession {
   async stepInto()  { this.currentPause = null; await this.cdp.send('Debugger.stepInto');  return this.waitNextPause() }
   async stepOut()   { this.currentPause = null; await this.cdp.send('Debugger.stepOut');   return this.waitNextPause() }
   async resume()    { this.currentPause = null; return this.cdp.send('Debugger.resume') }
+
+  async pause() {
+    if (this.currentPause) return this.currentPause
+    await this.cdp.send('Debugger.pause')
+    return this._waitRawPause()
+  }
+
+  async setBreakpoint(filePattern, line) {
+    // line is 1-based from user, CDP uses 0-based
+    const r = await this.cdp.send('Debugger.setBreakpointByUrl', {
+      lineNumber: line - 1,
+      urlRegex: filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+    })
+    const id = ++this._nextBpId
+    this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId })
+    return id
+  }
+
+  async removeBreakpoint(id) {
+    const bp = this.breakpoints.get(id)
+    if (!bp) throw new Error(`no breakpoint #${id}`)
+    await this.cdp.send('Debugger.removeBreakpoint', { breakpointId: bp.cdpId })
+    this.breakpoints.delete(id)
+  }
+
+  async removeAllBreakpoints() {
+    for (const [id, bp] of this.breakpoints) {
+      try { await this.cdp.send('Debugger.removeBreakpoint', { breakpointId: bp.cdpId }) } catch {}
+    }
+    this.breakpoints.clear()
+  }
 }
 
 // ─────────────────────────── Pretty (human) renderer ──────────────────────
@@ -219,15 +252,19 @@ function formatValue(v) {
 }
 
 const HELP = [
-  '  n, next       step over',
-  '  s, step       step into',
-  '  o, out        step out',
-  '  c, continue   resume execution',
-  '  l, list       show source around current line',
-  '  bt, where     show call stack',
-  '  locals        list local variables',
-  '  <expression>  evaluate in current frame (the pry trick)',
-  '  q, quit       disconnect',
+  '  n, next              step over',
+  '  s, step              step into',
+  '  o, out               step out',
+  '  c, continue          resume execution',
+  '  l, list              show source around current line',
+  '  bt, where            show call stack',
+  '  locals               list local variables',
+  '  break FILE:LINE      set breakpoint (e.g. break src/app.ts:42)',
+  '  breakpoints, bl      list breakpoints',
+  '  delete N / delete *  remove breakpoint #N or all',
+  '  pause                force-pause a running process',
+  '  <expression>         evaluate in current frame (the pry trick)',
+  '  q, quit              disconnect',
   '',
 ].join('\n')
 
@@ -247,15 +284,23 @@ async function runHumanMode(session) {
       return a.description || `[${a.type}]`
     })
     const text = args.join(' ')
-    // Suppress Node-internal warnings (inspector SecurityWarning, etc.)
     if (text.includes('SecurityWarning') || text.includes('DeprecationWarning')) return
     const tag = event.type === 'log' ? '' : `.${event.type}`
     process.stdout.write(`${C.dim}[console${tag}]${C.reset} ${text}\n`)
   }
 
-  await session.waitNextPause()
-  await session.getSource(session.topFrame().location.scriptId)
-  process.stdout.write(renderPause(session))
+  // Handle --inspect mode: process may already be running (not paused)
+  if (session.currentPause) {
+    await session._skipPryFrames()
+    if (session.topFrame()) {
+      await session.getSource(session.topFrame().location.scriptId)
+      process.stdout.write(renderPause(session))
+    }
+  } else {
+    process.stdout.write(
+      `${C.dim}(target is running — set breakpoints or type ${C.reset}pause${C.dim} to stop it)${C.reset}\n`
+    )
+  }
 
   session.cdp.onClose(() => {
     process.stdout.write(`\n${C.dim}(target disconnected)${C.reset}\n`)
@@ -265,14 +310,50 @@ async function runHumanMode(session) {
 
   while (true) {
     let line
-    try { line = await ask(`${C.green}(mypry)${C.reset} `) } catch { break }
+    const prompt = session.currentPause
+      ? `${C.green}(mypry)${C.reset} `
+      : `${C.yellow}(mypry|running)${C.reset} `
+    try { line = await ask(prompt) } catch { break }
     const cmd = (line || '').trim()
     if (!cmd) continue
 
     try {
       const lc = cmd.toLowerCase()
+      // ── commands that always work (paused or running) ──
       if (lc === 'q' || lc === 'quit' || lc === 'exit') break
       else if (lc === 'help' || lc === '?') process.stdout.write(HELP)
+      else if (lc.startsWith('break ') || lc.startsWith('b ')) {
+        const arg = cmd.slice(cmd.indexOf(' ') + 1).trim()
+        const m = arg.match(/^(.+):(\d+)$/)
+        if (!m) { process.stdout.write(`${C.red}usage: break file:line${C.reset}\n`); continue }
+        const id = await session.setBreakpoint(m[1], parseInt(m[2]))
+        process.stdout.write(`${C.green}breakpoint #${id}${C.reset} → ${m[1]}:${m[2]}\n`)
+      }
+      else if (lc === 'breakpoints' || lc === 'bl') {
+        if (!session.breakpoints.size) { process.stdout.write(`${C.dim}(no breakpoints)${C.reset}\n`); continue }
+        for (const [id, bp] of session.breakpoints) {
+          process.stdout.write(`  ${C.cyan}#${id}${C.reset} ${bp.file}:${bp.line}\n`)
+        }
+      }
+      else if (lc.startsWith('delete ') || lc.startsWith('del ')) {
+        const arg = cmd.slice(cmd.indexOf(' ') + 1).trim()
+        if (arg === '*' || arg === 'all') {
+          await session.removeAllBreakpoints()
+          process.stdout.write(`${C.dim}(all breakpoints removed)${C.reset}\n`)
+        } else {
+          await session.removeBreakpoint(parseInt(arg))
+          process.stdout.write(`${C.dim}(breakpoint #${arg} removed)${C.reset}\n`)
+        }
+      }
+      else if (lc === 'pause') {
+        if (session.currentPause) { process.stdout.write(`${C.dim}(already paused)${C.reset}\n`); continue }
+        await session.pause()
+        await afterStep(session)
+      }
+      // ── commands that require paused state ──
+      else if (!session.currentPause) {
+        process.stdout.write(`${C.dim}(not paused — use ${C.reset}break file:line${C.dim} then wait, or ${C.reset}pause${C.dim})${C.reset}\n`)
+      }
       else if (lc === 'n' || lc === 'next')      { await session.stepOver(); await afterStep(session) }
       else if (lc === 's' || lc === 'step')      { await session.stepInto(); await afterStep(session) }
       else if (lc === 'o' || lc === 'out')       { await session.stepOut();  await afterStep(session) }
@@ -299,7 +380,6 @@ async function runHumanMode(session) {
         }
       }
       else {
-        // pry-style: bare expression → evaluate in current frame
         const r = await session.evalInFrame(cmd)
         if (r.exceptionDetails) {
           process.stdout.write(`${C.red}!! ${r.exceptionDetails.text}${C.reset}\n`)
@@ -329,9 +409,14 @@ async function afterStep(session) {
 // Each request: {"op": "..."} → exactly one JSON response on stdout.
 
 async function runJsonMode(session) {
-  await session.waitNextPause()
-  await session.getSource(session.topFrame().location.scriptId)
-  emit(await snapshot(session))
+  // If already paused (pry() or --inspect-brk), emit state immediately
+  if (session.currentPause) {
+    await session._skipPryFrames()
+    if (session.topFrame()) await session.getSource(session.topFrame().location.scriptId)
+    emit(await snapshot(session))
+  } else {
+    emit({ status: 'running' })
+  }
 
   session.cdp.onClose(() => { emit({ status: 'terminated' }); process.exit(0) })
 
@@ -396,6 +481,20 @@ async function runJsonMode(session) {
             current_line: f.location.lineNumber + 1,
           }); break
         }
+        case 'set_breakpoint': {
+          const id = await session.setBreakpoint(req.file, req.line)
+          emit({ ok: true, id, file: req.file, line: req.line })
+          break
+        }
+        case 'remove_breakpoint':
+          await session.removeBreakpoint(req.id)
+          emit({ ok: true }); break
+        case 'breakpoints':
+          emit({ breakpoints: [...session.breakpoints.entries()].map(([id, bp]) => ({ id, file: bp.file, line: bp.line })) }); break
+        case 'pause':
+          await session.pause()
+          if (session.topFrame()) await session.getSource(session.topFrame().location.scriptId)
+          emit(await snapshot(session)); break
         case 'quit':
           emit({ status: 'disconnected' }); return
         default:
@@ -485,6 +584,14 @@ async function main() {
 
   // Unblock target if it was launched with --inspect-brk or wait=true.
   await cdp.send('Runtime.runIfWaitingForDebugger')
+
+  // Give the target a moment to hit a pry()/debugger statement
+  if (!session.currentPause) {
+    await Promise.race([
+      session._waitRawPause(),
+      new Promise(r => setTimeout(r, 300)),
+    ])
+  }
 
   if (values.json) await runJsonMode(session)
   else             await runHumanMode(session)
