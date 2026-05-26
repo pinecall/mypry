@@ -18,6 +18,7 @@ interface BreakpointEntry {
   file: string
   line: number
   cdpId: string
+  condition?: string
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -137,14 +138,16 @@ export class DebuggerSession {
     return this._waitRawPause()
   }
 
-  async setBreakpoint(filePattern: string, line: number): Promise<number> {
+  async setBreakpoint(filePattern: string, line: number, condition?: string): Promise<number> {
     // line is 1-based from user, CDP uses 0-based
-    const r = await this.cdp.send('Debugger.setBreakpointByUrl', {
+    const params: Record<string, unknown> = {
       lineNumber: line - 1,
       urlRegex: filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-    }) as any
+    }
+    if (condition) params.condition = condition
+    const r = await this.cdp.send('Debugger.setBreakpointByUrl', params) as any
     const id = ++this._nextBpId
-    this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId })
+    this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId, condition })
     return id
   }
 

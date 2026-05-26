@@ -82,8 +82,8 @@ export async function executeOp(
     }
 
     case 'set_breakpoint': {
-      const id = await session.setBreakpoint(params.file, params.line)
-      return { ok: true, id, file: params.file, line: params.line }
+      const id = await session.setBreakpoint(params.file, params.line, params.condition)
+      return { ok: true, id, file: params.file, line: params.line, condition: params.condition || null }
     }
 
     case 'remove_breakpoint':
