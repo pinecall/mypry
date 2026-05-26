@@ -1,0 +1,50 @@
+/**
+ * pry() — inline trigger for Node.js debugging.
+ *
+ * Drop `pry()` in your code, execution pauses and waits for a mypry client.
+ * Each call closes any stale inspector and re-opens with wait=true,
+ * ensuring it always blocks — even on subsequent calls.
+ *
+ * Usage:
+ *   const pry = require('mypry')
+ *   pry()
+ *   pry({ port: 9230, host: '127.0.0.1' })
+ *   pry({ message: 'after fetching user' })
+ *
+ * Mechanical translation from lib/pry.js.
+ */
+
+import inspector from 'node:inspector'
+
+export interface PryOptions {
+  port?: number
+  host?: string
+  message?: string
+}
+
+export function pry(opts: PryOptions = {}): void {
+  const { port = 9229, host = '0.0.0.0', message } = opts
+
+  // Always close + re-open so we block waiting for a fresh client every time
+  if (inspector.url()) {
+    try { inspector.close() } catch {}
+  }
+
+  process.stderr.write(
+    `[mypry] inspector listening on ${host}:${port}\n` +
+    `[mypry] waiting for client...\n`
+  )
+  // 3rd arg = wait for client to connect before returning.
+  inspector.open(port, host, true)
+  process.stderr.write('[mypry] client connected\n')
+
+  if (message) process.stderr.write(`[mypry] ${message}\n`)
+
+  // V8 honors `debugger` only while a client is attached → pause now.
+  // eslint-disable-next-line no-debugger
+  debugger
+  // NOTE: inspector stays open after continue — next pry() call will close + reopen it
+}
+
+export default pry
+export const brk = pry

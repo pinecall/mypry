@@ -13,7 +13,7 @@ const readline = require('node:readline')
 const path = require('node:path')
 
 const MYPRY_CLI = process.env.MYPRY_CLI || path.join(__dirname, 'mypry.js')
-const PRY_PATH = process.env.MYPRY_PRY || path.join(__dirname, 'lib', 'pry.js')
+const PRY_PATH = process.env.MYPRY_PRY || path.join(__dirname, 'lib', 'pry.cjs')
 const TARGET_PORT = 9230
 
 let passed = 0

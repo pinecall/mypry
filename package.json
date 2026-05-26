@@ -1,16 +1,38 @@
 {
   "name": "mypry",
   "version": "0.1.0",
-  "description": "A pry-style remote debugger for Node, with a JSON-stdio mode for LLM agents.",
-  "main": "lib/pry.js",
+  "description": "Node + browser debugger with inline pry() trigger, REPL, MCP, and HTTP — pairs with your AI agent",
+  "type": "module",
+  "main": "./lib/pry.cjs",
+  "types": "./dist/pry.d.ts",
   "bin": {
-    "mypry": "bin/mypry.js"
+    "mypry": "./bin/mypry"
   },
+  "exports": {
+    ".": {
+      "require": "./lib/pry.cjs",
+      "import": "./dist/pry.js",
+      "types": "./dist/pry.d.ts"
+    },
+    "./core": {
+      "import": "./dist/core/index.js",
+      "types": "./dist/core/index.d.ts"
+    }
+  },
+  "files": ["dist", "bin", "lib", "README.md", "LICENSE"],
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "node test-aurora-contract.cjs",
     "example": "node examples/test.js"
   },
-  "license": "MIT"
+  "keywords": ["debugger", "pry", "node", "browser", "cdp", "mcp", "http", "ai", "agent", "repl"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
 }
