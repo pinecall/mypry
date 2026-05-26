@@ -11,6 +11,7 @@ import { DebuggerSession } from './core/session.js'
 import { runRepl } from './transports/repl.js'
 import { runNdjson } from './transports/ndjson.js'
 import { runMcp } from './transports/mcp.js'
+import { startHttpServer, type HttpServer } from './transports/http.js'
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -20,19 +21,29 @@ async function main(): Promise<void> {
       url:  { type: 'string' },
       json: { type: 'boolean', default: false },
       mcp:  { type: 'boolean', default: false },
+      http: { type: 'string' },
+      'http-only': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
-      // Phases 3-4 will add: mcp, http, 'http-only', tab, 'tab-url'
     },
     allowPositionals: true,
   })
 
   if (values.help || positionals[0] === 'help') {
     process.stdout.write(
-      `mypry attach [--host HOST] [--port PORT] [--url WS_URL] [--json]\n\n` +
+      `mypry attach [--host HOST] [--port PORT] [--url WS_URL] [--json|--mcp] [--http[=PORT]]\n\n` +
+      `Stdio transports (pick one):\n` +
+      `  (none)         human REPL (default)\n` +
+      `  --json         ndjson stdio (for embedders like Aurora)\n` +
+      `  --mcp          MCP server on stdio (for Claude Code, Cursor)\n\n` +
+      `Side transport (combinable with any stdio mode):\n` +
+      `  --http[=PORT]  HTTP server (default port 3099)\n` +
+      `  --http-only    HTTP only, no stdio transport\n\n` +
       `Examples:\n` +
-      `  mypry attach                       # connects to 127.0.0.1:9229\n` +
-      `  mypry attach --host 10.0.0.5       # remote\n` +
-      `  mypry attach --json                # newline-JSON mode for agents\n`
+      `  mypry attach                       # human REPL\n` +
+      `  mypry attach --json                # Aurora mode\n` +
+      `  mypry attach --mcp                 # MCP for Claude Code\n` +
+      `  mypry attach --http                # REPL + HTTP (pair programming)\n` +
+      `  mypry attach --http-only           # headless HTTP daemon\n`
     )
     return
   }
@@ -77,10 +88,28 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  if (values.mcp)       await runMcp(session)
-  else if (values.json) await runNdjson(session)
-  else                  await runRepl(session)
+  // Start HTTP side transport if requested
+  const httpEnabled = values.http !== undefined || values['http-only']
+  const httpPort = values.http ? parseInt(values.http, 10) || 3099 : 3099
+  let httpServer: HttpServer | undefined
 
+  if (httpEnabled) {
+    httpServer = await startHttpServer(session, { port: httpPort })
+    process.stderr.write(`[mypry] HTTP server listening on http://127.0.0.1:${httpPort}\n`)
+  }
+
+  if (values['http-only']) {
+    // No stdio transport — just keep HTTP running
+    await new Promise(() => {}) // block forever
+  } else if (values.mcp) {
+    await runMcp(session)
+  } else if (values.json) {
+    await runNdjson(session)
+  } else {
+    await runRepl(session)
+  }
+
+  await httpServer?.close()
   try { cdp.ws.close() } catch {}
   process.exit(0)
 }
