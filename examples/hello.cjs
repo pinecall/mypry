@@ -1,6 +1,6 @@
 'use strict'
 
-const pry = require('../lib/pry')
+const pry = require('../lib/pry.cjs')
 
 // ── Hello World con mypry ──
 

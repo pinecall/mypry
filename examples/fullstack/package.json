@@ -1,0 +1,16 @@
+{
+  "name": "mypry-fullstack-example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:server": "node server/index.js",
+    "dev:client": "cd client && npm run dev",
+    "dev": "echo 'Run dev:server and dev:client in separate terminals'"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "cors": "^2.8.5",
+    "mypry": "file:../../"
+  }
+}
