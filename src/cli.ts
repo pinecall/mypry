@@ -12,6 +12,7 @@ import { runRepl } from './transports/repl.js'
 import { runNdjson } from './transports/ndjson.js'
 import { runMcp } from './transports/mcp.js'
 import { startHttpServer, type HttpServer } from './transports/http.js'
+import { discoverTargets, matchTarget } from './core/targets.js'
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -23,6 +24,8 @@ async function main(): Promise<void> {
       mcp:  { type: 'boolean', default: false },
       http: { type: 'string' },
       'http-only': { type: 'boolean', default: false },
+      tab: { type: 'string' },
+      'tab-url': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
@@ -51,20 +54,25 @@ async function main(): Promise<void> {
   // Resolve WebSocket URL via /json discovery if not given
   let wsUrl = values.url
   if (!wsUrl) {
-    // 0.0.0.0 is a bind address, not routable — use 127.0.0.1 to connect
     const connectHost = values.host === '0.0.0.0' ? '127.0.0.1' : values.host
-    let res: Response
+    let targets
     try {
-      res = await fetch(`http://${connectHost}:${values.port}/json`)
+      targets = await discoverTargets(connectHost!, parseInt(values.port!, 10))
     } catch (e: any) {
       process.stderr.write(`cannot reach inspector at ${connectHost}:${values.port} — ${e.message}\n`)
       process.exit(1)
     }
-    const list = await res.json() as { webSocketDebuggerUrl: string }[]
-    if (!list.length) { process.stderr.write('no inspectable contexts\n'); process.exit(1) }
-    wsUrl = list[0].webSocketDebuggerUrl
-    // The inspector may advertise 0.0.0.0 in the ws URL — fix it
-    if (wsUrl!.includes('0.0.0.0')) wsUrl = wsUrl!.replace('0.0.0.0', connectHost!)
+    if (!targets.length) { process.stderr.write('no inspectable contexts\n'); process.exit(1) }
+
+    // Tab matching (for Chrome/browser targets)
+    const tabMatch = matchTarget(targets, { tab: values.tab, tabUrl: values['tab-url'] })
+    if (tabMatch) {
+      wsUrl = tabMatch.wsUrl
+      const kind = tabMatch.kind === 'chrome' ? 'browser' : 'node'
+      process.stderr.write(`[mypry] attaching to ${kind} target: ${tabMatch.title || tabMatch.url || 'unknown'}\n`)
+    } else {
+      wsUrl = targets[0].wsUrl
+    }
   }
 
   const cdp = new CDPClient(wsUrl!)

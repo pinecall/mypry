@@ -17,6 +17,18 @@
     "./core": {
       "import": "./dist/core/index.js",
       "types": "./dist/core/index.d.ts"
+    },
+    "./browser": {
+      "import": "./dist/browser.js",
+      "types": "./dist/browser.d.ts"
+    },
+    "./mcp": {
+      "import": "./dist/transports/mcp.js",
+      "types": "./dist/transports/mcp.d.ts"
+    },
+    "./http": {
+      "import": "./dist/transports/http.js",
+      "types": "./dist/transports/http.d.ts"
     }
   },
   "files": [
