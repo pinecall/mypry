@@ -19,7 +19,13 @@
       "types": "./dist/core/index.d.ts"
     }
   },
-  "files": ["dist", "bin", "lib", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -31,10 +37,24 @@
     "test:suite": "tsc -p tsconfig.test.json && node --test dist-test/test/ndjson-contract.test.js",
     "example": "node examples/test.js"
   },
-  "keywords": ["debugger", "pry", "node", "browser", "cdp", "mcp", "http", "ai", "agent", "repl"],
+  "keywords": [
+    "debugger",
+    "pry",
+    "node",
+    "browser",
+    "cdp",
+    "mcp",
+    "http",
+    "ai",
+    "agent",
+    "repl"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }

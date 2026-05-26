@@ -10,6 +10,7 @@ import { CDPClient } from './core/cdp-client.js'
 import { DebuggerSession } from './core/session.js'
 import { runRepl } from './transports/repl.js'
 import { runNdjson } from './transports/ndjson.js'
+import { runMcp } from './transports/mcp.js'
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -18,6 +19,7 @@ async function main(): Promise<void> {
       port: { type: 'string', default: '9229' },
       url:  { type: 'string' },
       json: { type: 'boolean', default: false },
+      mcp:  { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       // Phases 3-4 will add: mcp, http, 'http-only', tab, 'tab-url'
     },
@@ -70,8 +72,14 @@ async function main(): Promise<void> {
     ])
   }
 
-  if (values.json) await runNdjson(session)
-  else             await runRepl(session)
+  if (values.json && values.mcp) {
+    process.stderr.write('error: --json and --mcp are mutually exclusive\n')
+    process.exit(1)
+  }
+
+  if (values.mcp)       await runMcp(session)
+  else if (values.json) await runNdjson(session)
+  else                  await runRepl(session)
 
   try { cdp.ws.close() } catch {}
   process.exit(0)
