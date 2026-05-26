@@ -1,233 +1,200 @@
-# mypry
+# 🔮 mypry
 
-A pry-style debugger for Node.js. Two modes from one CLI:
+**Node + browser debugger with inline `pry()` trigger — pairs with your AI agent.**
 
-- **Human TTY** — pry-like REPL where bare expressions evaluate in scope.
-- **`--json`** — newline-delimited JSON over stdio, designed for LLM coding agents.
-
-Talks CDP (Chrome DevTools Protocol) over WebSocket. Zero deps. Node 22+.
-
-## Install
+Drop `pry()` anywhere in your code. Execution freezes. Attach with a human REPL, pipe ndjson for agent orchestration, speak MCP to Claude Code, or curl the HTTP API.
 
 ```bash
-npm install --global .          # exposes `mypry`
-# or use directly: node bin/mypry.js attach
+npm install mypry
 ```
 
-## Two ways to debug
+## Quick Start
 
-### 1. Inline `pry()` — like Ruby's `binding.pry`
-
-Drop `pry()` anywhere in your code. When it's hit, execution pauses and waits
-for a debugger client.
+### 1. Drop `pry()` in your code
 
 ```js
 const pry = require('mypry')
 
-function calcularPrecio(cantidad, precio) {
-  const subtotal = cantidad * precio
-  pry()                           // pauses here, waiting for client
-  return subtotal * 1.21
+async function processOrder(order) {
+  const total = calculateTotal(order)
+  pry() // 🔮 execution stops here
+  await chargeCustomer(order.userId, total)
 }
 ```
 
-```bash
-# Terminal 1 — run your app
-node app.js
-# [mypry] inspector listening on 0.0.0.0:9229
-# [mypry] waiting for client...
+### 2. Attach
 
-# Terminal 2 — attach
+```bash
+# Human REPL (default)
 mypry attach
+
+# AI agent (ndjson over stdio)
+mypry attach --json
+
+# MCP server (Claude Code / Cursor)
+mypry attach --mcp
+
+# HTTP API (curl / embedders)
+mypry attach --http-only
 ```
 
-### 2. `--inspect` mode — no code changes needed
+### 3. Debug
 
-Use Node's built-in `--inspect` flag. Set breakpoints from the mypry REPL.
+```
+─── /src/orders.ts:12  processOrder ───
+    10 │ async function processOrder(order) {
+    11 │   const total = calculateTotal(order)
+►   12 │   pry()
+    13 │   await chargeCustomer(order.userId, total)
+    14 │ }
+
+(mypry) order
+=> {"id": "ord_123", "items": [{"sku": "A1", "qty": 2}]}
+
+(mypry) total
+=> 49.99
+
+(mypry) next
+►   13 │   await chargeCustomer(order.userId, total)
+```
+
+## Transports
+
+| Flag | Protocol | Use case |
+|------|----------|----------|
+| *(none)* | Readline REPL | Human developer debugging |
+| `--json` | ndjson over stdio | Agent orchestration (Aurora, custom) |
+| `--mcp` | MCP over stdio | Claude Code, Cursor, Windsurf |
+| `--http[=PORT]` | REST over HTTP | curl, browser devtools, embedders |
+| `--http-only` | REST over HTTP | Headless daemon (no stdio) |
+
+`--http` is a **side transport** — combine it with any stdio mode:
 
 ```bash
-# Terminal 1 — start with --inspect (any Node app, framework, server)
-node --inspect app.js
-# or for frameworks:
-NODE_OPTIONS='--inspect' npm run dev
+# REPL + HTTP (pair programming: you debug, agent queries via HTTP)
+mypry attach --http
 
-# Terminal 2 — attach and set breakpoints
-mypry attach
-(mypry|running) break src/routes/products.ts:15
-# → breakpoint #1 → src/routes/products.ts:15
-
-# Hit the route (browser, curl, etc.) → debugger pauses
-(mypry) locals
-(mypry) request.params
-(mypry) c
+# Agent ndjson + HTTP dashboard
+mypry attach --json --http=4000
 ```
 
-Works with **Express, Fastify, NestJS, Remix, Next.js, Hono** — anything
-that runs on Node.
+## API
 
-## Human mode
+### Inline Trigger
 
-```bash
-mypry attach                          # local, default port
-mypry attach --host 10.0.0.5          # remote
+```js
+// CommonJS
+const pry = require('mypry')
+pry()
+pry({ port: 9230 })
+pry({ message: 'after auth' })
+
+// ESM
+import { pry } from 'mypry'
+pry()
+
+// Browser
+import { pry } from 'mypry/browser'
+pry({ message: 'before render' })
 ```
 
-```
-─── /app/test.js:8  calcularPrecio ───
-   6 │   const subtotal = cantidad * precio
-   7 │
-►  8 │   pry()
-   9 │   return subtotal * 1.21
-  10 │ }
-(mypry) cantidad
-=> 5
-(mypry) subtotal
-=> 500
-(mypry) cantidad * precio + 50
-=> 550
-(mypry) n
-─── /app/test.js:9  calcularPrecio ───
-   ...
-(mypry) c
-```
+### REPL Commands
 
-### Commands
-
-| Command | Description |
-|---------|-------------|
+| Command | Action |
+|---------|--------|
 | `n`, `next` | Step over |
 | `s`, `step` | Step into |
 | `o`, `out` | Step out |
-| `c`, `continue` | Resume execution |
-| `l`, `list` | Show source around current line |
-| `bt`, `where` | Show call stack |
-| `locals` | List local variables |
-| `break FILE:LINE` | Set breakpoint (e.g. `break src/app.ts:42`) |
-| `breakpoints`, `bl` | List active breakpoints |
-| `delete N` / `delete *` | Remove breakpoint #N or all |
-| `pause` | Force-pause a running process |
-| `<expression>` | Evaluate in current frame |
+| `c`, `continue` | Resume |
+| `l`, `list` | Source context |
+| `bt`, `where` | Call stack |
+| `locals` | Local variables |
+| `break file:line` | Set breakpoint |
+| `breakpoints` | List breakpoints |
+| `delete N` | Remove breakpoint |
+| `pause` | Force-pause running code |
+| `<expr>` | Eval in frame |
 | `q`, `quit` | Disconnect |
 
-When connected to a running process (no pause), the prompt shows
-`(mypry|running)`. You can set breakpoints and `pause` from this state.
+### ndjson Protocol
 
-## Agent mode (`--json`)
-
-```bash
-mypry attach --json
-```
-
-Stdout: emits an initial state JSON (paused or running), then one JSON line
-per request.
-Stdin: one `{"op": "..."}` JSON object per line.
-
-```
-< {"status":"paused","file":"/app/test.js","line":8,"function":"calcularPrecio",
-   "source_window":[...], "locals":{"cantidad":5,"precio":100,"subtotal":500}}
-> {"op":"eval","expr":"cantidad * precio"}
-< {"ok":true,"type":"number","value":500,"description":null}
-> {"op":"step_over"}
-< {"status":"paused","file":"/app/test.js","line":9, ...}
-> {"op":"continue"}
-< {"status":"terminated"}
-```
-
-If the target is already running (no pause): `< {"status":"running"}`
-
-### Operations
-
-| op | params | response |
-|---|---|---|
-| `state` | — | full paused snapshot (file, line, locals, source) |
-| `eval` | `{expr}` | `{ok, type, value, description}` |
-| `step_over` | — | next paused snapshot |
-| `step_into` | — | next paused snapshot |
-| `step_out` | — | next paused snapshot |
-| `continue` | — | next paused snapshot or `{status:"terminated"}` |
-| `locals` | — | `{locals: {...}}` |
-| `backtrace` | — | `{frames: [...]}` |
-| `source` | — | `{file, source, current_line}` |
-| `set_breakpoint` | `{file, line}` | `{ok, id, file, line}` |
-| `remove_breakpoint` | `{id}` | `{ok: true}` |
-| `breakpoints` | — | `{breakpoints: [{id, file, line}, ...]}` |
-| `pause` | — | paused snapshot |
-| `quit` | — | `{status:"disconnected"}` then exits |
-
-## How an LLM agent uses it
-
-The agent runs `mypry attach --json` as a long-lived child process and writes
-one JSON request per line to its stdin, reading one JSON response per line from
-its stdout. State (current frame, scopes, source cache) is held server-side in
-the CLI process — each tool call from the agent is stateless from its view.
-
-Wrap it as a single agent tool with operations matching the table above.
-Antigravity / Claude Code / any agent framework with a "shell session" tool
-can drive it directly.
-
-## Using with frameworks
-
-### Remix / Next.js / NestJS
+Send JSON commands over stdin, receive JSON responses on stdout:
 
 ```bash
-# Start the dev server with inspector enabled
-NODE_OPTIONS='--inspect' npm run dev
-
-# Attach and set breakpoints
-mypry attach
-(mypry|running) break app/routes/products.tsx:15
-# Hit the route → pauses at line 15
-(mypry) locals
-(mypry) params
-(mypry) c
+echo '{"op":"state"}' | node mypry.js attach --json --port 9229
 ```
 
-### NestJS example with `pry()`
+**Operations:** `state`, `eval`, `step_over`, `step_into`, `step_out`, `continue`, `locals`, `backtrace`, `source`, `set_breakpoint`, `remove_breakpoint`, `breakpoints`, `pause`, `quit`
+
+### MCP Tools
+
+10 tools designed for AI agents:
+
+| Tool | Description |
+|------|-------------|
+| `debugger_state` | Current status, file, line, locals |
+| `debugger_step` | Step over/into/out |
+| `debugger_continue` | Resume to next breakpoint |
+| `debugger_eval` | Evaluate expression in frame |
+| `debugger_set_breakpoint` | Set breakpoint (with optional condition) |
+| `debugger_list_breakpoints` | List active breakpoints |
+| `debugger_remove_breakpoint` | Remove by ID |
+| `debugger_pause` | Force-pause running code |
+| `debugger_backtrace` | Call stack |
+| `debugger_source` | Full source of current file |
+
+### HTTP API
+
+```bash
+# Get state
+curl localhost:3099/state
+
+# Evaluate expression
+curl -X POST localhost:3099/command -d '{"op":"eval","expr":"x + 1"}'
+
+# Step over
+curl -X POST localhost:3099/command -d '{"op":"step_over"}'
+
+# Health check
+curl localhost:3099/health
+```
+
+## Browser Debugging
+
+Attach to Chrome tabs via `--remote-debugging-port`:
+
+```bash
+# Launch Chrome with debugging
+google-chrome --remote-debugging-port=9222
+
+# Attach to a tab by title
+mypry attach --port 9222 --tab "My App"
+
+# Or by URL
+mypry attach --port 9222 --tab-url "localhost:3000"
+```
+
+## Programmatic Use
 
 ```ts
-const pry = require('mypry')
+import { CDPClient, DebuggerSession, snapshot } from 'mypry/core'
+import { startHttpServer } from 'mypry/http'
+import { startMcpServer } from 'mypry/mcp'
 
-@Get(':id')
-async getUser(@Param('id') id: string) {
-  const user = await this.usersService.findOne(id)
-  pry()  // inspect user, id, this
-  return user
-}
+const cdp = new CDPClient('ws://127.0.0.1:9229/...')
+await cdp.connect()
+const session = new DebuggerSession(cdp)
+await session.init()
+
+// Use any transport
+await startHttpServer(session, { port: 4000 })
+await startMcpServer(session)
 ```
 
-## Remote
+## Requirements
 
-```bash
-# target machine
-node --inspect=0.0.0.0:9229 app.js
-# or in code: pry({ host: '0.0.0.0', port: 9229 })
+- Node.js ≥ 22.0.0
 
-# your machine
-mypry attach --host TARGET_IP --port 9229
-```
+## License
 
-⚠️ The CDP port is unauthenticated. For production-ish remote use, tunnel it
-over SSH:
-
-```bash
-ssh -L 9229:localhost:9229 user@target
-mypry attach           # connects to localhost:9229 → tunneled
-```
-
-## Console output
-
-When you run `console.log()` from the REPL, the output appears in the
-debugger terminal (forwarded via CDP), not just in the target's stdout.
-
-```
-(mypry) console.log('debug:', user)
-[console] "debug:" {"id": 1, "name": "Alice"}
-=> undefined
-```
-
-## What's intentionally not built (yet)
-
-- Conditional breakpoints.
-- Watch expressions across pauses.
-- Source-map awareness (TS/Babel).
-- Auth on the inspector port.
+MIT
