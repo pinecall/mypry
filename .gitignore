@@ -1,4 +1,5 @@
 node_modules/
 dist/
+dist-test/
 *.tar.gz
 *.legacy.js
