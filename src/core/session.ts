@@ -86,11 +86,21 @@ export class DebuggerSession {
       })
     } catch (err: any) {
       // Circular/deep objects (Vue reactives, etc.) fail with returnByValue
-      // Retry with preview-only mode
+      // Retry with circular-safe JSON
       if (err?.message?.includes('too long') || err?.message?.includes('-32000')) {
         return this.cdp.send('Debugger.evaluateOnCallFrame', {
           callFrameId: frame.callFrameId,
-          expression: `(function() { try { return JSON.stringify(${expr}, null, 2).slice(0, 4000); } catch(e) { return String(${expr}); } })()`,
+          expression: `(function(v) {
+            var seen = new WeakSet();
+            return JSON.stringify(v, function(k, val) {
+              if (typeof val === 'object' && val !== null) {
+                if (seen.has(val)) return '[Circular]';
+                seen.add(val);
+              }
+              if (typeof val === 'function') return '[Function: ' + (val.name || 'anonymous') + ']';
+              return val;
+            }, 2).slice(0, 8000);
+          })(${expr})`,
           returnByValue: true,
         })
       }
