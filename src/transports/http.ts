@@ -21,6 +21,7 @@
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import type { DebuggerSession } from '../core/session.js'
+import type { WorkerInfo } from '../core/cdp-client.js'
 import { executeOp } from '../core/ops.js'
 import { snapshot } from '../core/snapshot.js'
 
@@ -30,6 +31,7 @@ export interface HttpServerOptions {
   port?: number           // default 3099
   host?: string           // default 127.0.0.1
   token?: string          // single token (rw) or 'tok1:rw,tok2:ro' for multi
+  workerSessions?: Map<string, { info: WorkerInfo, session: DebuggerSession }>
   pairChannel?: EventEmitter
 }
 
@@ -118,6 +120,15 @@ export async function startHttpServer(
         if (url.pathname === '/breakpoints') {
           return respond(res, 200, await executeOp(session, 'breakpoints'))
         }
+        if (url.pathname === '/workers') {
+          const workers = opts.workerSessions || new Map()
+          const list = Array.from(workers.entries()).map(([id, { info }]) => ({
+            sessionId: id,
+            title: info.title,
+            url: info.url,
+          }))
+          return respond(res, 200, { workers: list, count: list.length })
+        }
         if (url.pathname === '/health') {
           return respond(res, 200, {
             ok: true,
@@ -164,8 +175,15 @@ export async function startHttpServer(
         if ((req as any)._perm === 'ro' && !isReadOnlyOp(body.op)) {
           return respond(res, 403, { error: `Forbidden — '${body.op}' requires rw token` })
         }
+        // Route to worker session if specified
+        let targetSession = session
+        if (body.worker && opts.workerSessions) {
+          const ws = opts.workerSessions.get(body.worker)
+          if (!ws) return respond(res, 404, { error: `worker '${body.worker}' not found` })
+          targetSession = ws.session
+        }
         opts.pairChannel?.emit('agent-action', body)
-        const result = await executeOp(session, body.op, body)
+        const result = await executeOp(targetSession, body.op, body)
         opts.pairChannel?.emit('agent-result', { op: body.op, result })
         return respond(res, 200, result)
       }

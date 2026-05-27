@@ -6,7 +6,8 @@
  */
 
 import { parseArgs } from 'node:util'
-import { CDPClient } from './core/cdp-client.js'
+import { CDPClient, WorkerCDPProxy, discoverWorkers } from './core/cdp-client.js'
+import type { WorkerInfo } from './core/cdp-client.js'
 import { DebuggerSession } from './core/session.js'
 import { runRepl } from './transports/repl.js'
 import { runNdjson } from './transports/ndjson.js'
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
       tab: { type: 'string' },
       'tab-url': { type: 'string' },
       chrome: { type: 'boolean', default: false },
+      workers: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
@@ -374,13 +376,34 @@ async function main(): Promise<void> {
   }
   setupReconnect()
 
+  // Discover and attach to worker threads
+  const workerSessions = new Map<string, { info: WorkerInfo, session: DebuggerSession }>()
+
+  if (values.workers) {
+    const workers = await discoverWorkers(backendCdp)
+    for (const info of workers) {
+      const proxy = new WorkerCDPProxy(backendCdp, info.sessionId)
+      const wsession = new DebuggerSession(proxy as any)
+      await wsession.init()
+      workerSessions.set(info.sessionId, { info, session: wsession })
+      process.stderr.write(`[mypry] worker attached: ${info.title} (${info.sessionId.slice(0, 8)})\n`)
+    }
+    if (workers.length === 0) {
+      process.stderr.write(`[mypry] no workers found (they may not have started yet)\n`)
+    }
+  }
+
   // Start HTTP side transport if requested
   const httpEnabled = values.http !== undefined || values['http-only']
   const httpPort = values.http ? parseInt(values.http, 10) || 3099 : 3099
   let httpServer: HttpServer | undefined
 
   if (httpEnabled) {
-    httpServer = await startHttpServer(backendSession, { port: httpPort, token: values.token })
+    httpServer = await startHttpServer(backendSession, {
+      port: httpPort,
+      token: values.token,
+      workerSessions: workerSessions.size > 0 ? workerSessions : undefined,
+    })
     process.stderr.write(`[mypry] HTTP server listening on http://127.0.0.1:${httpPort}\n`)
   }
 
