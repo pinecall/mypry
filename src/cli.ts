@@ -314,6 +314,11 @@ async function main(): Promise<void> {
       ])
     }
 
+    // If paused inside pry(), auto-step-out to the caller's frame
+    if (session.currentPause) {
+      await session._skipPryFrames()
+    }
+
     return { session, cdp }
   }
 
