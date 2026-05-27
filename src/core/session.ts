@@ -77,47 +77,44 @@ export class DebuggerSession {
   async evalInFrame(expr: string): Promise<any> {
     const frame = this.topFrame()
     if (!frame) throw new Error('not paused')
-    try {
-      return await this.cdp.send('Debugger.evaluateOnCallFrame', {
-        callFrameId: frame.callFrameId,
-        expression: expr,
-        returnByValue: true,
-        generatePreview: true,
-      })
-    } catch (err: any) {
-      // Circular/deep objects (Vue reactives, etc.) fail with returnByValue
-      // Retry with circular-safe JSON + Vue unwrapping
-      if (err?.message?.includes('too long') || err?.message?.includes('-32000')) {
-        return this.cdp.send('Debugger.evaluateOnCallFrame', {
-          callFrameId: frame.callFrameId,
-          expression: `(function(v) {
-            try {
-              if (v && v.__v_isRef) v = v.value;
-              if (v && v.__v_raw) v = v.__v_raw;
-              if (v === null) return 'null';
-              if (v === undefined) return 'undefined';
-              if (typeof v !== 'object' && typeof v !== 'function') return String(v);
-              var seen = new WeakSet();
-              var depth = 0;
-              return JSON.stringify(v, function(k, val) {
-                if (typeof val === 'object' && val !== null) {
-                  if (val.__v_isRef) val = val.value;
-                  if (val && val.__v_raw) val = val.__v_raw;
-                  if (seen.has(val)) return '[Circular]';
-                  seen.add(val);
-                }
-                if (typeof val === 'function') return '[Function: ' + (val.name || 'anon') + ']';
-                return val;
-              }, 2).slice(0, 8000);
-            } catch(e) {
-              return typeof v + ': ' + (v && v.constructor ? v.constructor.name : String(v));
+
+    // Always use smart serializer — CDP returnByValue silently returns {}
+    // for Vue/Pinia Proxy objects, so we can't rely on it.
+    return this.cdp.send('Debugger.evaluateOnCallFrame', {
+      callFrameId: frame.callFrameId,
+      expression: `(function(__expr) {
+        try {
+          var v = __expr;
+          // Unwrap Vue ref
+          if (v && v.__v_isRef) v = v.value;
+          // Unwrap Pinia store → raw state
+          if (v && v.$state) v = JSON.parse(JSON.stringify(v.$state));
+          // Unwrap Vue reactive proxy
+          if (v && v.__v_raw) v = v.__v_raw;
+          // Primitives
+          if (v === null) return null;
+          if (v === undefined) return undefined;
+          if (typeof v === 'string') return v;
+          if (typeof v === 'number' || typeof v === 'boolean') return v;
+          if (typeof v === 'function') return '[Function: ' + (v.name || 'anon') + ']';
+          // Object/Array — circular-safe JSON
+          var seen = new WeakSet();
+          return JSON.parse(JSON.stringify(v, function(k, val) {
+            if (typeof val === 'object' && val !== null) {
+              if (val.__v_isRef) return val.value;
+              if (val.__v_raw) val = val.__v_raw;
+              if (seen.has(val)) return '[Circular]';
+              seen.add(val);
             }
-          })(${expr})`,
-          returnByValue: true,
-        })
-      }
-      throw err
-    }
+            if (typeof val === 'function') return '[Function: ' + (val.name || 'anon') + ']';
+            return val;
+          }));
+        } catch(e) {
+          return '[eval error] ' + e.message;
+        }
+      })(${expr})`,
+      returnByValue: true,
+    })
   }
 
   async getLocals(): Promise<Record<string, unknown>> {
