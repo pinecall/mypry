@@ -117,6 +117,10 @@ export async function executeOp(
     case 'quit':
       return { status: 'disconnected' }
 
+    case 'workers':
+      // Handled by HTTP layer (needs workerSessions context)
+      return { workers: [], count: 0, _needs_context: true }
+
     default:
       return { error: `unknown op: ${op}` }
   }

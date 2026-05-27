@@ -668,24 +668,99 @@ Newline-delimited JSON on stdin/stdout:
 
 ### MCP (Model Context Protocol)
 
-```bash
-mypry attach --mcp
+mypry uses a **daemon + bridge** architecture for MCP:
+
+```
+AI Agent → (stdio) → MCP Bridge → (HTTP) → mypry daemon → (CDP) → Node.js
 ```
 
-MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
+- **MCP Bridge** (`mcp-bridge.js`) — stateless proxy, starts instantly, never blocks
+- **mypry daemon** (`mypry attach --http-only`) — connects to V8 inspector, manages CDP
+
+#### 1. Start the daemon
+
+```bash
+# Standalone (default port 3098)
+mypry attach --http-only --port 9229 --http=3098 --workers
+
+# For Aurora TUI (already runs on :3099)
+# No extra daemon needed — set MYPRY_URL instead
+```
+
+#### 2. Configure the bridge
+
+**Antigravity** (`~/.gemini/config/mcp_config.json`):
+```json
+{
+  "mypry": {
+    "command": "node",
+    "args": ["/path/to/mypry/dist/mcp-bridge.js"]
+  }
+}
+```
+
+**Claude Code** (`~/.claude/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "mypry": {
+      "command": "node",
+      "args": ["/path/to/mypry/dist/mcp-bridge.js"]
+    }
+  }
+}
+```
+
+**Aurora TUI** — set `MYPRY_URL` to point at Aurora's API:
+```json
+{
+  "mypry": {
+    "command": "node",
+    "args": ["/path/to/mypry/dist/mcp-bridge.js"],
+    "env": { "MYPRY_URL": "http://127.0.0.1:3099/api/debugger" }
+  }
+}
+```
+
+#### MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `debugger_state` | Current pause location, source, and locals |
-| `debugger_eval` | Evaluate expression in current frame |
-| `debugger_step` | Step over/into/out (with `mode` param) |
-| `debugger_continue` | Resume execution |
-| `debugger_set_breakpoint` | Set breakpoint at file:line |
+| `debugger_state` | Current pause: file, line, function, locals, source window |
+| `debugger_eval` | Evaluate JS expression in scope (supports `worker` param) |
+| `debugger_continue` | Resume — **blocks** until next breakpoint |
+| `debugger_step_over` | Step to next line, returns new state |
+| `debugger_step_into` | Step into function call |
+| `debugger_step_out` | Step out of current function |
+| `debugger_pause` | Force-pause a running process |
+| `debugger_set_breakpoint` | Set breakpoint with optional `condition` expression |
 | `debugger_remove_breakpoint` | Remove breakpoint by ID |
-| `debugger_list_breakpoints` | List active breakpoints |
-| `debugger_pause` | Force pause on running target |
+| `debugger_list_breakpoints` | List all active breakpoints |
 | `debugger_backtrace` | Call stack frames |
 | `debugger_source` | Full source of current file |
+| `debugger_trace_start` | Start trace mode — auto-resume, collect snapshots |
+| `debugger_trace_stop` | Stop trace, return all collected hits |
+| `debugger_trace_status` | Peek at trace buffer without stopping |
+| `debugger_workers` | List worker threads with session IDs |
+
+### Web UI
+
+A ready-to-use web debugger UI is included:
+
+```bash
+# 1. Start target
+node --inspect examples/tutorial-server.cjs
+
+# 2. Start daemon
+mypry attach --http-only --http=3098 --workers
+
+# 3. Open the UI
+open examples/web-debugger.html
+```
+
+The web UI connects to the daemon's HTTP API and SSE stream. Use it as a starting point for building custom debugger UIs (like Aurora's TUI, but for the browser).
+
+Features: source view with current-line highlighting, locals panel, call stack, breakpoint management, step/continue/pause controls, eval bar, and live SSE updates.
 
 
 ## CLI Reference
@@ -703,9 +778,9 @@ Attach options:
   --host HOST        Inspector host (default: 127.0.0.1)
   --url WS_URL       Direct WebSocket URL
   --json             ndjson stdio transport
-  --mcp              MCP server on stdio
+  --mcp              MCP server on stdio (direct, blocks on connect)
   --http[=PORT]      HTTP API server (default: 3099)
-  --http-only        HTTP only, no stdio transport
+  --http-only        HTTP only, no stdio transport (daemon mode)
   --token TOKEN      Bearer token for HTTP auth (or 'tok1:rw,tok2:ro')
   --workers          Discover and attach to worker threads
   --chrome           Also launch Chrome for frontend debugging
@@ -716,9 +791,8 @@ Examples:
   mypry attach                               # backend REPL
   mypry attach --chrome                      # backend + frontend
   mypry attach --json                        # ndjson for embedders
-  mypry attach --mcp                         # MCP for Claude Code
-  mypry attach --http-only                   # headless API
-  mypry attach --http-only --workers         # with worker thread support
+  mypry attach --http-only --http=3098       # daemon mode (for MCP bridge)
+  mypry attach --http-only --workers         # daemon + workers
   mypry attach --http --token admin:rw,ro:ro # multi-token auth
   mypry inject 12345                         # inject into running process
 ```
@@ -728,41 +802,51 @@ Examples:
 ```
 Your Code                    mypry
 ─────────                    ─────
-                             ┌──────────────────────────┐
-  debugger ── V8 Inspector ──→│                          │
-  (Node)      (port 9229)    │   DebuggerSession         │
-                             │   ├── pause/step/eval     │
-  debugger ── Chrome CDP ───→│   ├── smart serialization │
-  (Browser)   (port 9222)    │   └── auto-reconnect ♻️   │
-                             │                          │
-  pry()  ─── V8 Inspector ──→│   Transports:             │
-  (standalone)               │   ├── REPL (terminal)     │
-                             │   ├── JSON (ndjson stdio)  │
-                             │   ├── MCP  (Claude Code)   │
-                             │   └── HTTP (REST API)      │
-                             │                          │
-                             │   Core (importable):       │
-                             │   ├── CDPClient            │
-                             │   ├── DebuggerSession      │
-                             │   ├── snapshot / executeOp │
-                             │   └── discoverTargets      │
-                             └──────────────────────────┘
+                             ┌──────────────────────────────┐
+  debugger ── V8 Inspector ──│                              │
+  (Node)      (port 9229)   │   DebuggerSession             │
+                             │   ├── pause/step/eval         │
+  debugger ── Chrome CDP ───│   ├── trace mode (non-block)   │
+  (Browser)   (port 9222)   │   ├── conditional breakpoints  │
+                             │   ├── worker thread debugging  │
+  pry()  ─── V8 Inspector ──│   └── auto-reconnect ♻️       │
+  (standalone)               │                              │
+                             │   Transports:                 │
+                             │   ├── REPL (terminal)         │
+                             │   ├── JSON (ndjson stdio)     │
+                             │   ├── HTTP (REST + SSE)       │
+                             │   └── MCP Bridge → HTTP       │
+                             │                              │
+                             │   Core (importable):          │
+                             │   ├── CDPClient               │
+                             │   ├── DebuggerSession          │
+                             │   ├── snapshot / executeOp     │
+                             │   └── discoverTargets          │
+                             └──────────────────────────────┘
+
+AI Agent Integration:
+  ┌──────────┐  stdio   ┌───────────┐  HTTP   ┌────────────┐   CDP    ┌─────────┐
+  │ Claude   │─────────│ MCP Bridge │────────│ mypry      │────────│ Node.js │
+  │ Antigrav │          │ (instant)  │ :3098  │ daemon     │ :9229  │ process │
+  │ Cursor   │          │ stateless  │        │ --http-only│        │ --inspect│
+  └──────────┘          └───────────┘         └────────────┘        └─────────┘
 ```
 
 | Module | Purpose |
 |--------|---------|
 | `src/pry.ts` | `pry()` — opens inspector dynamically, fires `debugger` |
 | `src/browser.ts` | Browser `pry()` — fires `debugger` for Chrome CDP |
-| `src/core/session.ts` | Debugger session — pause, step, eval, trace, smart serialization |
-| `src/core/cdp-client.ts` | Raw WebSocket CDP client + `WorkerCDPProxy` for worker threads |
+| `src/core/session.ts` | Debugger session — pause, step, eval, trace, serialization |
+| `src/core/cdp-client.ts` | Raw WebSocket CDP client + `WorkerCDPProxy` |
 | `src/core/ops.ts` | Shared operation dispatch (used by all transports) |
 | `src/core/targets.ts` | Target discovery (Node inspector + Chrome tabs) |
 | `src/core/snapshot.ts` | State snapshot builder |
 | `src/core/sourcemap.ts` | Source map resolution for TypeScript |
 | `src/transports/repl.ts` | Human REPL with ANSI colors |
 | `src/transports/ndjson.ts` | JSON stdio transport |
-| `src/transports/mcp.ts` | MCP server transport |
-| `src/transports/http.ts` | HTTP REST API + SSE + batch + auth + worker routing |
+| `src/transports/mcp.ts` | MCP server (direct, for `--mcp` flag) |
+| `src/transports/http.ts` | HTTP REST API + SSE + batch + auth + workers |
+| `src/mcp-bridge.ts` | Stateless MCP→HTTP bridge (for daemon architecture) |
 | `src/cli.ts` | CLI entry — `attach`, `open`, `inject`, auto-reconnect |
 
 ## Requirements

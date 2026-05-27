@@ -183,8 +183,16 @@ export async function startHttpServer(
           targetSession = ws.session
         }
         opts.pairChannel?.emit('agent-action', body)
-        const result = await executeOp(targetSession, body.op, body)
+        let result = await executeOp(targetSession, body.op, body)
         opts.pairChannel?.emit('agent-result', { op: body.op, result })
+
+        // Inject worker data (executeOp doesn't have workerSessions context)
+        if (body.op === 'workers' && result._needs_context && opts.workerSessions) {
+          const workers = Array.from(opts.workerSessions.entries()).map(([id, { info }]) => ({
+            sessionId: id, title: info.title, url: info.url,
+          }))
+          result = { workers, count: workers.length }
+        }
 
         // wait: true → block until next pause (for continue/step ops)
         const WAIT_OPS = new Set(['continue', 'step_over', 'step_into', 'step_out'])

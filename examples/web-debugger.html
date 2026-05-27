@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mypry — Web Debugger</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+      --border: #30363d; --text: #e6edf3; --text2: #8b949e;
+      --green: #3fb950; --red: #f85149; --yellow: #d29922;
+      --blue: #58a6ff; --purple: #bc8cff; --cyan: #39d353;
+      --line-hl: rgba(56,139,253,0.15);
+      --radius: 8px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* Header */
+    .header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 20px; border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+    .header h1 { font-size: 16px; font-weight: 600; }
+    .header h1 span { color: var(--blue); }
+    .status-badge {
+      padding: 3px 10px; border-radius: 12px; font-size: 11px;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .status-badge.paused { background: rgba(210,153,34,0.2); color: var(--yellow); }
+    .status-badge.running { background: rgba(63,185,80,0.2); color: var(--green); }
+    .status-badge.disconnected { background: rgba(248,81,73,0.2); color: var(--red); }
+    .header .spacer { flex: 1; }
+    .header .url { color: var(--text2); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+
+    /* Layout */
+    .main { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: 1fr 200px; height: calc(100vh - 49px); }
+
+    /* Source panel */
+    .source-panel {
+      border-right: 1px solid var(--border); overflow: auto;
+      font-family: 'JetBrains Mono', monospace; font-size: 13px;
+      line-height: 1.7;
+    }
+    .source-panel .file-path {
+      padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
+      color: var(--text2); font-size: 12px; position: sticky; top: 0; z-index: 1;
+    }
+    .source-panel .file-path strong { color: var(--text); }
+    .source-line { display: flex; padding: 0 16px; white-space: pre; }
+    .source-line.current { background: var(--line-hl); }
+    .source-line.current .line-content { color: #fff; }
+    .source-line .line-num {
+      width: 45px; text-align: right; color: var(--text2); user-select: none;
+      padding-right: 16px; flex-shrink: 0;
+    }
+    .source-line .line-indicator { width: 20px; flex-shrink: 0; color: var(--yellow); font-weight: bold; }
+    .source-line .line-content { flex: 1; }
+
+    /* Sidebar */
+    .sidebar { border-bottom: 1px solid var(--border); overflow: auto; }
+    .panel-header {
+      padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+      color: var(--text2); position: sticky; top: 0; z-index: 1;
+    }
+    .panel-content { padding: 8px 16px; }
+
+    /* Locals */
+    .local-var { display: flex; gap: 8px; padding: 3px 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .local-var .var-name { color: var(--purple); min-width: 100px; }
+    .local-var .var-value { color: var(--cyan); word-break: break-all; }
+    .local-var .var-type { color: var(--text2); font-size: 10px; }
+
+    /* Stack */
+    .stack-frame { padding: 4px 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .stack-frame .fn-name { color: var(--blue); }
+    .stack-frame .location { color: var(--text2); }
+
+    /* Controls */
+    .controls-bar {
+      grid-column: 1 / -1; border-top: 1px solid var(--border);
+      display: flex; gap: 8px; align-items: flex-start; padding: 12px 20px;
+      background: var(--bg2);
+    }
+    .btn-group { display: flex; gap: 4px; }
+    .btn {
+      padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--border);
+      background: var(--bg3); color: var(--text); font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: 'Inter', sans-serif; transition: all 0.15s;
+    }
+    .btn:hover { background: var(--border); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn.primary { background: rgba(56,139,253,0.15); border-color: var(--blue); color: var(--blue); }
+    .btn.primary:hover { background: rgba(56,139,253,0.25); }
+    .btn.danger { border-color: var(--red); color: var(--red); }
+
+    /* Eval bar */
+    .eval-container { flex: 1; display: flex; gap: 8px; }
+    .eval-input {
+      flex: 1; padding: 6px 12px; border-radius: var(--radius); border: 1px solid var(--border);
+      background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace;
+      font-size: 13px; outline: none;
+    }
+    .eval-input:focus { border-color: var(--blue); }
+    .eval-result {
+      padding: 8px 16px; font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      color: var(--cyan); max-height: 100px; overflow: auto;
+      border-top: 1px solid var(--border); background: var(--bg);
+    }
+
+    /* Breakpoints */
+    .bp-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+    .bp-dot { width: 8px; height: 8px; background: var(--red); border-radius: 50%; }
+    .bp-remove { color: var(--text2); cursor: pointer; font-size: 10px; }
+    .bp-remove:hover { color: var(--red); }
+
+    /* Tabs */
+    .tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--bg2); }
+    .tab {
+      padding: 8px 16px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+    /* Empty state */
+    .empty { color: var(--text2); font-size: 13px; padding: 20px; text-align: center; }
+    .empty code { background: var(--bg3); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+    /* Toast */
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; padding: 10px 16px;
+      background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+      font-size: 12px; color: var(--text); opacity: 0; transition: opacity 0.3s;
+      z-index: 100;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>my<span>pry</span></h1>
+    <div id="statusBadge" class="status-badge disconnected">disconnected</div>
+    <div class="spacer"></div>
+    <div class="url" id="targetUrl">—</div>
+  </div>
+
+  <div class="main">
+    <!-- Source Panel -->
+    <div class="source-panel" id="sourcePanel">
+      <div class="file-path" id="filePath">No file loaded</div>
+      <div id="sourceCode" class="empty" style="padding:40px">
+        <p>Not connected to mypry daemon</p>
+        <p style="margin-top:12px">Start the daemon:</p>
+        <p><code>mypry attach --http-only --http=3098 --workers</code></p>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="tabs">
+        <div class="tab active" data-tab="locals">Locals</div>
+        <div class="tab" data-tab="stack">Stack</div>
+        <div class="tab" data-tab="breakpoints">Breakpoints</div>
+      </div>
+      <div id="tabLocals" class="panel-content"></div>
+      <div id="tabStack" class="panel-content" style="display:none"></div>
+      <div id="tabBreakpoints" class="panel-content" style="display:none"></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls-bar">
+      <div class="btn-group">
+        <button class="btn primary" id="btnContinue" onclick="cmd('continue')" disabled>▶ Continue</button>
+        <button class="btn" id="btnStepOver" onclick="cmd('step_over')" disabled>⏭ Over</button>
+        <button class="btn" id="btnStepInto" onclick="cmd('step_into')" disabled>⬇ Into</button>
+        <button class="btn" id="btnStepOut" onclick="cmd('step_out')" disabled>⬆ Out</button>
+        <button class="btn danger" id="btnPause" onclick="cmd('pause')">⏸ Pause</button>
+      </div>
+      <div class="eval-container">
+        <input class="eval-input" id="evalInput" placeholder="Evaluate expression..." onkeydown="if(event.key==='Enter')evalExpr()">
+        <button class="btn" onclick="evalExpr()">Eval</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="evalResult" class="eval-result" style="display:none"></div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const API = 'http://localhost:3098'
+    let currentStatus = 'disconnected'
+    let sseConnection = null
+
+    // ── API helpers ──
+    async function api(path, body) {
+      const opts = body
+        ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+        : {}
+      const res = await fetch(`${API}${path}`, opts)
+      return res.json()
+    }
+
+    // ── State rendering ──
+    function renderState(data) {
+      const badge = document.getElementById('statusBadge')
+      badge.textContent = data.status
+      badge.className = `status-badge ${data.status}`
+      currentStatus = data.status
+
+      const paused = data.status === 'paused'
+      document.getElementById('btnContinue').disabled = !paused
+      document.getElementById('btnStepOver').disabled = !paused
+      document.getElementById('btnStepInto').disabled = !paused
+      document.getElementById('btnStepOut').disabled = !paused
+      document.getElementById('btnPause').disabled = paused
+
+      if (!paused) {
+        document.getElementById('filePath').textContent = 'Running...'
+        document.getElementById('tabLocals').innerHTML = '<div class="empty">Process running</div>'
+        return
+      }
+
+      // File path
+      const shortFile = data.file?.split('/').slice(-3).join('/') || '?'
+      document.getElementById('filePath').innerHTML = `<strong>${shortFile}</strong> : ${data.line} — <em>${data.function || 'anonymous'}</em>`
+      document.getElementById('targetUrl').textContent = shortFile
+
+      // Source window
+      if (data.source_window) {
+        const html = data.source_window.map(l => `
+          <div class="source-line ${l.current ? 'current' : ''}">
+            <span class="line-num">${l.line}</span>
+            <span class="line-indicator">${l.current ? '►' : ' '}</span>
+            <span class="line-content">${escapeHtml(l.text)}</span>
+          </div>
+        `).join('')
+        document.getElementById('sourceCode').innerHTML = html
+      }
+
+      // Locals
+      if (data.locals) {
+        const html = Object.entries(data.locals).map(([k, v]) =>
+          `<div class="local-var">
+            <span class="var-name">${k}</span>
+            <span class="var-value">${escapeHtml(String(v))}</span>
+          </div>`
+        ).join('')
+        document.getElementById('tabLocals').innerHTML = html || '<div class="empty">No locals</div>'
+      }
+    }
+
+    function renderStack(frames) {
+      const html = frames.map((f, i) =>
+        `<div class="stack-frame">
+          <span class="fn-name">${f.function}</span>
+          <span class="location"> ${f.file?.split('/').pop()}:${f.line}</span>
+        </div>`
+      ).join('')
+      document.getElementById('tabStack').innerHTML = html || '<div class="empty">Not paused</div>'
+    }
+
+    function renderBreakpoints(bps) {
+      const html = bps.map(bp =>
+        `<div class="bp-item">
+          <span class="bp-dot"></span>
+          <span>${bp.file?.split('/').pop()}:${bp.line}</span>
+          ${bp.condition ? `<span class="var-type">if ${bp.condition}</span>` : ''}
+          <span class="bp-remove" onclick="removeBp(${bp.id})">✕</span>
+        </div>`
+      ).join('')
+      document.getElementById('tabBreakpoints').innerHTML = html || '<div class="empty">No breakpoints</div>'
+    }
+
+    // ── Commands ──
+    async function cmd(op) {
+      try {
+        const data = await api('/command', { op, wait: true })
+        renderState(data)
+        if (data.status === 'paused') {
+          const bt = await api('/command', { op: 'backtrace' })
+          if (bt.frames) renderStack(bt.frames)
+          const bps = await api('/command', { op: 'breakpoints' })
+          if (bps.breakpoints) renderBreakpoints(bps.breakpoints)
+        }
+        toast(`${op} → ${data.status}`)
+      } catch (e) { toast(`Error: ${e.message}`, true) }
+    }
+
+    async function evalExpr() {
+      const input = document.getElementById('evalInput')
+      const expr = input.value.trim()
+      if (!expr) return
+      try {
+        const r = await api('/command', { op: 'eval', expr })
+        const resultEl = document.getElementById('evalResult')
+        resultEl.style.display = 'block'
+        if (r.ok) {
+          resultEl.textContent = `=> ${r.description || JSON.stringify(r.value)}`
+          resultEl.style.color = 'var(--cyan)'
+        } else {
+          resultEl.textContent = `Error: ${r.error}`
+          resultEl.style.color = 'var(--red)'
+        }
+      } catch (e) { toast(`Eval error: ${e.message}`, true) }
+    }
+
+    async function removeBp(id) {
+      await api('/command', { op: 'remove_breakpoint', id })
+      const bps = await api('/command', { op: 'breakpoints' })
+      if (bps.breakpoints) renderBreakpoints(bps.breakpoints)
+      toast(`Breakpoint ${id} removed`)
+    }
+
+    // ── SSE ──
+    function connectSSE() {
+      if (sseConnection) sseConnection.close()
+      sseConnection = new EventSource(`${API}/events`)
+
+      sseConnection.addEventListener('paused', (e) => {
+        const data = JSON.parse(e.data)
+        renderState({ ...data, status: 'paused' })
+        // Auto-fetch stack
+        api('/command', { op: 'backtrace' }).then(bt => { if (bt.frames) renderStack(bt.frames) })
+        api('/command', { op: 'breakpoints' }).then(bps => { if (bps.breakpoints) renderBreakpoints(bps.breakpoints) })
+      })
+
+      sseConnection.addEventListener('resumed', () => {
+        renderState({ status: 'running' })
+      })
+
+      sseConnection.onerror = () => {
+        renderState({ status: 'disconnected' })
+        setTimeout(connectSSE, 3000)
+      }
+    }
+
+    // ── Tabs ──
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
+        tab.classList.add('active')
+        document.getElementById('tabLocals').style.display = tab.dataset.tab === 'locals' ? '' : 'none'
+        document.getElementById('tabStack').style.display = tab.dataset.tab === 'stack' ? '' : 'none'
+        document.getElementById('tabBreakpoints').style.display = tab.dataset.tab === 'breakpoints' ? '' : 'none'
+      })
+    })
+
+    // ── Helpers ──
+    function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+    function toast(msg, isError) {
+      const el = document.getElementById('toast')
+      el.textContent = msg
+      el.style.borderColor = isError ? 'var(--red)' : 'var(--blue)'
+      el.classList.add('show')
+      setTimeout(() => el.classList.remove('show'), 2500)
+    }
+
+    // ── Init ──
+    async function init() {
+      try {
+        const state = await api('/command', { op: 'state' })
+        renderState(state)
+        if (state.status === 'paused') {
+          const bt = await api('/command', { op: 'backtrace' })
+          if (bt.frames) renderStack(bt.frames)
+        }
+        const bps = await api('/command', { op: 'breakpoints' })
+        if (bps.breakpoints) renderBreakpoints(bps.breakpoints)
+        connectSSE()
+        toast('Connected to mypry')
+      } catch {
+        renderState({ status: 'disconnected' })
+        setTimeout(init, 3000)
+      }
+    }
+
+    init()
+  </script>
+</body>
+</html>
