@@ -549,6 +549,7 @@ MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
 mypry attach --http              # alongside REPL
 mypry attach --http-only         # standalone API (no REPL)
 mypry attach --http=4000         # custom port (default: 3099)
+mypry attach --http --token s3cr3t  # with bearer auth
 ```
 
 | Method | Path | Description |
@@ -557,7 +558,64 @@ mypry attach --http=4000         # custom port (default: 3099)
 | GET | `/state` | Full paused state snapshot |
 | GET | `/backtrace` | Call stack frames |
 | GET | `/breakpoints` | Active breakpoints |
+| GET | `/events` | **SSE stream** — real-time `paused`/`resumed`/`disconnected` events |
 | POST | `/command` | Any op: `{op, ...params}` |
+| POST | `/batch` | Multiple ops: `{ops: [{op, ...}, ...]}` → `{results: [...]}` |
+
+#### SSE Events (no polling)
+
+Subscribe to `GET /events` for real-time debugger events. No polling needed:
+
+```bash
+curl -N http://localhost:3099/events
+# event: paused
+# data: {"status":"paused","file":"auth.service.ts","line":136,...}
+#
+# event: resumed
+# data: {"status":"running"}
+#
+# event: disconnected
+# data: {"status":"disconnected"}
+```
+
+On connect, the server immediately sends the current state as the first event.
+
+#### Batch Operations
+
+Evaluate multiple expressions and continue in a single HTTP call:
+
+```bash
+curl -X POST http://localhost:3099/batch -d '{
+  "ops": [
+    {"op": "eval", "expr": "user.email"},
+    {"op": "eval", "expr": "user.role"},
+    {"op": "eval", "expr": "request.body"},
+    {"op": "continue"}
+  ]
+}'
+# → {"results": [
+#     {"ok":true,"value":"alice@test.com"},
+#     {"ok":true,"value":"admin"},
+#     {"ok":true,"value":{"action":"login"}},
+#     {"status":"running"}
+#   ]}
+```
+
+#### Authentication
+
+When `--token` is set, all requests require `Authorization: Bearer <token>`:
+
+```bash
+# Server
+mypry attach --http-only --token my-secret
+
+# Client
+curl -H "Authorization: Bearer my-secret" http://localhost:3099/health
+# → {"ok":true,...}
+
+curl http://localhost:3099/health  # no token
+# → {"error":"Unauthorized — Bearer token required"}
+```
 
 ## CLI Reference
 
@@ -576,6 +634,7 @@ Attach options:
   --mcp              MCP server on stdio
   --http[=PORT]      HTTP API server (default: 3099)
   --http-only        HTTP only, no stdio transport
+  --token TOKEN      Bearer token for HTTP auth
   --chrome           Also launch Chrome for frontend debugging
 
 Examples:
