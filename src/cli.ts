@@ -83,6 +83,7 @@ async function main(): Promise<void> {
       mcp:  { type: 'boolean', default: false },
       http: { type: 'string' },
       'http-only': { type: 'boolean', default: false },
+      token: { type: 'string' },
       tab: { type: 'string' },
       'tab-url': { type: 'string' },
       chrome: { type: 'boolean', default: false },
@@ -105,6 +106,7 @@ async function main(): Promise<void> {
       `  --mcp              MCP server on stdio\n` +
       `  --http[=PORT]      HTTP API server (default: 3099)\n` +
       `  --http-only        HTTP only, no stdio transport\n` +
+      `  --token TOKEN      Bearer token for HTTP auth\n` +
       `  --chrome           Also launch Chrome for frontend debugging\n\n` +
       `Examples:\n` +
       `  mypry open                                  # auto-detect dev server, launch Chrome\n` +
@@ -355,7 +357,7 @@ async function main(): Promise<void> {
   let httpServer: HttpServer | undefined
 
   if (httpEnabled) {
-    httpServer = await startHttpServer(backendSession, { port: httpPort })
+    httpServer = await startHttpServer(backendSession, { port: httpPort, token: values.token })
     process.stderr.write(`[mypry] HTTP server listening on http://127.0.0.1:${httpPort}\n`)
   }
 
