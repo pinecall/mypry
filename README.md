@@ -8,6 +8,8 @@ Drop a `debugger` statement anywhere. mypry connects via Chrome DevTools Protoco
 npm install mypry
 ```
 
+> **📖 [Deep Dive Tutorial](TUTORIAL.md)** — hands-on walkthrough of every feature with a running example.
+
 ## Quick Start
 
 ### Zero-import mode (recommended)
