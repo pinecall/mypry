@@ -189,68 +189,96 @@ async function main(): Promise<void> {
     process.stderr.write(`[mypry] ✅ frontend debugger attached\n`)
   }
 
-  // ── Backend session (Node.js inspector) ──
-
-  let backendSession: DebuggerSession | undefined
-  let backendCdp: CDPClient | undefined
-
-  let wsUrl = values.url
-  if (!wsUrl) {
-    const connectHost = values.host === '0.0.0.0' ? '127.0.0.1' : values.host
-    const port = parseInt(values.port!, 10)
-    let targets: Awaited<ReturnType<typeof discoverTargets>> | undefined
-
-    // Try once — if it fails, poll until pry() opens the inspector
-    try {
-      targets = await discoverTargets(connectHost!, port)
-    } catch {
-      process.stderr.write(
-        `[mypry] waiting for backend inspector on ${connectHost}:${port}...\n` +
-        `[mypry] trigger a pry() call (e.g. click Load in the browser)\n`
-      )
-      while (true) {
-        await new Promise(r => setTimeout(r, 500))
-        try {
-          targets = await discoverTargets(connectHost!, port)
-          if (targets.length) break
-        } catch { /* keep trying */ }
-      }
-      process.stderr.write(`[mypry] backend inspector found!\n`)
-    }
-    if (!targets?.length) { process.stderr.write('no inspectable contexts\n'); process.exit(1) }
-
-    // Tab matching (for Chrome/browser targets)
-    const tabMatch = matchTarget(targets, { tab: values.tab, tabUrl: values['tab-url'] })
-    if (tabMatch) {
-      wsUrl = tabMatch.wsUrl
-      const kind = tabMatch.kind === 'chrome' ? 'browser' : 'node'
-      process.stderr.write(`[mypry] attaching to ${kind} target: ${tabMatch.title || tabMatch.url || 'unknown'}\n`)
-    } else {
-      wsUrl = targets[0].wsUrl
-    }
-  }
-
-  backendCdp = new CDPClient(wsUrl!)
-  await backendCdp.connect()
-  backendSession = new DebuggerSession(backendCdp)
-  await backendSession.init()
-
-  // Unblock target if it was launched with --inspect-brk or wait=true.
-  await backendCdp.send('Runtime.runIfWaitingForDebugger')
-
-  // Give the target a moment to hit a pry()/debugger statement
-  if (!backendSession.currentPause) {
-    await Promise.race([
-      backendSession._waitRawPause(),
-      new Promise(r => setTimeout(r, 300)),
-    ])
-  }
-
-
   if (values.json && values.mcp) {
     process.stderr.write('error: --json and --mcp are mutually exclusive\n')
     process.exit(1)
   }
+
+  // ── Backend connection (with auto-reconnect) ──
+
+  const connectHost = values.host === '0.0.0.0' ? '127.0.0.1' : values.host!
+  const port = parseInt(values.port!, 10)
+
+  async function connectBackend(): Promise<{ session: DebuggerSession, cdp: CDPClient }> {
+    let wsUrl = values.url
+    if (!wsUrl) {
+      let targets: Awaited<ReturnType<typeof discoverTargets>> | undefined
+
+      // Try once — if it fails, poll until pry() opens the inspector
+      try {
+        targets = await discoverTargets(connectHost, port)
+      } catch {
+        process.stderr.write(
+          `[mypry] waiting for backend inspector on ${connectHost}:${port}...\n` +
+          `[mypry] trigger a pry() call or add a debugger statement\n`
+        )
+        while (true) {
+          await new Promise(r => setTimeout(r, 500))
+          try {
+            targets = await discoverTargets(connectHost, port)
+            if (targets.length) break
+          } catch { /* keep trying */ }
+        }
+        process.stderr.write(`[mypry] backend inspector found!\n`)
+      }
+      if (!targets?.length) { process.stderr.write('no inspectable contexts\n'); process.exit(1) }
+
+      // Tab matching (for Chrome/browser targets)
+      const tabMatch = matchTarget(targets, { tab: values.tab, tabUrl: values['tab-url'] })
+      if (tabMatch) {
+        wsUrl = tabMatch.wsUrl
+        const kind = tabMatch.kind === 'chrome' ? 'browser' : 'node'
+        process.stderr.write(`[mypry] attaching to ${kind} target: ${tabMatch.title || tabMatch.url || 'unknown'}\n`)
+      } else {
+        wsUrl = targets[0].wsUrl
+      }
+    }
+
+    const cdp = new CDPClient(wsUrl!)
+    await cdp.connect()
+    const session = new DebuggerSession(cdp)
+    await session.init()
+
+    // Unblock target if it was launched with --inspect-brk or wait=true.
+    await cdp.send('Runtime.runIfWaitingForDebugger')
+
+    // Give the target a moment to hit a pry()/debugger statement
+    if (!session.currentPause) {
+      await Promise.race([
+        session._waitRawPause(),
+        new Promise(r => setTimeout(r, 300)),
+      ])
+    }
+
+    return { session, cdp }
+  }
+
+  let { session: backendSession, cdp: backendCdp } = await connectBackend()
+
+  // Auto-reconnect when WebSocket drops (nodemon, NestJS --watch, etc.)
+  function setupReconnect() {
+    backendCdp.onClose(() => {
+      process.stderr.write(`\n[mypry] backend disconnected — reconnecting...\n`)
+      const retry = async () => {
+        for (let i = 1; i <= 20; i++) {
+          await new Promise(r => setTimeout(r, 2000))
+          try {
+            const conn = await connectBackend()
+            backendSession = conn.session
+            backendCdp = conn.cdp
+            process.stderr.write(`[mypry] ✅ backend reconnected\n`)
+            setupReconnect()  // re-wire for the new connection
+            return
+          } catch {
+            if (i % 5 === 0) process.stderr.write(`[mypry] reconnect attempt ${i}...\n`)
+          }
+        }
+        process.stderr.write(`[mypry] gave up reconnecting after 20 attempts\n`)
+      }
+      retry()
+    })
+  }
+  setupReconnect()
 
   // Start HTTP side transport if requested
   const httpEnabled = values.http !== undefined || values['http-only']
@@ -279,3 +307,4 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => { process.stderr.write(`fatal: ${e.message}\n`); process.exit(1) })
+
