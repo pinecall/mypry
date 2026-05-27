@@ -1,7 +1,7 @@
 /**
  * MCP (Model Context Protocol) transport — stdio server.
  *
- * Exposes mypry as an MCP server for Claude Code, Cursor, etc.
+ * Exposes mypry as an MCP server for Claude Code, Cursor, Antigravity, etc.
  * Invocation: mypry attach --mcp
  *
  * Tool design: "fewer richer tools" — every state-changing tool
@@ -17,12 +17,15 @@ import {
 import { EventEmitter } from 'node:events'
 import type { DebuggerSession } from '../core/session.js'
 import { snapshot, cleanUrl } from '../core/snapshot.js'
+import { executeOp } from '../core/ops.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface McpServerOptions {
   /** Optional pair-programming side channel — emits every agent action */
   pairChannel?: EventEmitter
+  /** Worker sessions (from --workers flag) */
+  workerSessions?: Map<string, { info: any, session: DebuggerSession }>
 }
 
 const TOOLS = [
@@ -55,19 +58,20 @@ const TOOLS = [
       required: ['expr'],
       properties: {
         expr: { type: 'string', description: 'JavaScript expression to evaluate' },
+        worker: { type: 'string', description: 'Optional: worker sessionId to eval in (from debugger_workers)' },
       },
     },
   },
   {
     name: 'debugger_set_breakpoint',
-    description: 'Set a breakpoint at a file and line number. The file can be a path substring (e.g. "app.ts" matches "/src/app.ts").',
+    description: 'Set a breakpoint at a file and line number. Optionally add a condition — the breakpoint only pauses when the condition expression evaluates to true.',
     inputSchema: {
       type: 'object' as const,
       required: ['file', 'line'],
       properties: {
         file: { type: 'string', description: 'File path or substring to match' },
         line: { type: 'number', description: 'Line number (1-based)' },
-        condition: { type: 'string', description: 'Optional condition expression' },
+        condition: { type: 'string', description: 'Optional JS condition expression — breakpoint only fires when true (e.g. "user.role === \'admin\'"' },
       },
     },
   },
@@ -107,6 +111,33 @@ const TOOLS = [
       },
     },
   },
+  // ─── New: Trace Mode ───
+  {
+    name: 'debugger_trace_start',
+    description: 'Start trace mode — breakpoints will auto-resume and silently collect snapshots instead of pausing. The app keeps running. Use debugger_trace_stop to collect results.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        maxBuffer: { type: 'number', description: 'Max snapshots to keep in buffer (default: 100)' },
+      },
+    },
+  },
+  {
+    name: 'debugger_trace_stop',
+    description: 'Stop trace mode and return all collected snapshot hits. Each hit includes timestamp, file, line, function, and locals.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  {
+    name: 'debugger_trace_status',
+    description: 'Check trace status and peek at collected hits without stopping the trace.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
+  // ─── New: Workers ───
+  {
+    name: 'debugger_workers',
+    description: 'List all discovered worker threads with their session IDs. Use the sessionId in other tools (via the "worker" parameter) to debug a specific worker.',
+    inputSchema: { type: 'object' as const, properties: {} },
+  },
 ]
 
 export async function runMcp(
@@ -114,9 +145,19 @@ export async function runMcp(
   opts: McpServerOptions = {}
 ): Promise<void> {
   const server = new Server(
-    { name: 'mypry', version: '0.1.0' },
+    { name: 'mypry', version: '0.2.0' },
     { capabilities: { tools: {} } }
   )
+
+  /** Resolve session: main or worker */
+  function resolveSession(args: any): DebuggerSession {
+    if (args?.worker && opts.workerSessions) {
+      const ws = opts.workerSessions.get(args.worker)
+      if (!ws) throw new Error(`worker '${args.worker}' not found`)
+      return ws.session
+    }
+    return session
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: TOOLS,
@@ -163,7 +204,8 @@ export async function runMcp(
         }
 
         case 'debugger_eval': {
-          const r = await session.evalInFrame((args as any).expr || '') as any
+          const targetSession = resolveSession(args)
+          const r = await targetSession.evalInFrame((args as any).expr || '') as any
           if (r.exceptionDetails) {
             result = {
               ok: false,
@@ -184,8 +226,9 @@ export async function runMcp(
         case 'debugger_set_breakpoint': {
           const file = (args as any).file
           const line = (args as any).line
-          const id = await session.setBreakpoint(file, line)
-          result = { ok: true, id, file, line }
+          const condition = (args as any).condition
+          const id = await session.setBreakpoint(file, line, condition)
+          result = { ok: true, id, file, line, condition: condition || null }
           break
         }
 
@@ -195,6 +238,7 @@ export async function runMcp(
               id,
               file: bp.file,
               line: bp.line,
+              condition: bp.condition || null,
             })),
           }
           break
@@ -233,6 +277,31 @@ export async function runMcp(
             source: s?.source || '',
             current_line: frame.location.lineNumber + 1,
           }
+          break
+        }
+
+        // ─── Trace Mode ───
+        case 'debugger_trace_start':
+          result = await executeOp(session, 'trace_start', args as any)
+          break
+
+        case 'debugger_trace_stop':
+          result = await executeOp(session, 'trace_stop')
+          break
+
+        case 'debugger_trace_status':
+          result = await executeOp(session, 'trace_status')
+          break
+
+        // ─── Workers ───
+        case 'debugger_workers': {
+          const workers = opts.workerSessions || new Map()
+          const list = Array.from(workers.entries()).map(([id, { info }]) => ({
+            sessionId: id,
+            title: info.title,
+            url: info.url,
+          }))
+          result = { workers: list, count: list.length }
           break
         }
 

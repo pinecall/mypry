@@ -411,7 +411,9 @@ async function main(): Promise<void> {
     // No stdio transport — just keep HTTP running
     await new Promise(() => {}) // block forever
   } else if (values.mcp) {
-    await runMcp(backendSession)
+    await runMcp(backendSession, {
+      workerSessions: workerSessions.size > 0 ? workerSessions : undefined,
+    })
   } else if (values.json) {
     await runNdjson(backendSession)
   } else {

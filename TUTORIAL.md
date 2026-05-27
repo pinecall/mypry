@@ -739,3 +739,154 @@ mypry open http://localhost:5173
 | `trace_stop` | — | Stop trace, return hits |
 | `trace_status` | — | Peek at trace buffer |
 | `quit` | — | Disconnect |
+
+---
+
+## AI Agent Integration
+
+mypry was designed for AI agents. Here's how to set it up for each platform.
+
+### MCP (Model Context Protocol)
+
+MCP is the preferred integration. mypry runs as an MCP server on stdio, exposing 14 tools that map directly to debugger operations.
+
+```bash
+mypry attach --mcp --workers
+```
+
+This starts mypry as an MCP server that:
+- Connects to the V8 inspector (port 9229 by default)
+- Discovers worker threads
+- Exposes all debugger operations as MCP tools
+
+#### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `debugger_state` | Current pause: file, line, locals, source window |
+| `debugger_eval` | Evaluate expression (supports `worker` param) |
+| `debugger_step` | Step over/into/out, returns new state |
+| `debugger_continue` | Resume (blocks until next pause!) |
+| `debugger_pause` | Force-pause a running process |
+| `debugger_set_breakpoint` | Set BP with optional `condition` expression |
+| `debugger_remove_breakpoint` | Remove by ID |
+| `debugger_list_breakpoints` | List all active BPs |
+| `debugger_backtrace` | Call stack frames |
+| `debugger_source` | Full source of current file |
+| `debugger_trace_start` | Start trace mode (non-blocking) |
+| `debugger_trace_stop` | Stop trace, collect snapshots |
+| `debugger_trace_status` | Peek at trace buffer |
+| `debugger_workers` | List worker threads |
+
+### Claude Code
+
+Add to `~/.claude/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mypry": {
+      "command": "mypry",
+      "args": ["attach", "--mcp", "--workers"]
+    }
+  }
+}
+```
+
+Then in Claude Code:
+
+```
+You: The server is paused. What's the current state?
+Claude: [calls debugger_state]
+  → Paused at auth.service.ts:151, locals: {emailAddress: "admin@test.com"}
+
+You: What's the user's role?
+Claude: [calls debugger_eval {expr: "user.role"}]
+  → "admin"
+
+You: Set a trace on the login handler and continue
+Claude: [calls debugger_set_breakpoint {file: "auth.service.ts", line: 151}]
+       [calls debugger_trace_start {maxBuffer: 50}]
+       [calls debugger_continue]
+```
+
+### Antigravity
+
+Add to `mcp_config.json`:
+
+```json
+{
+  "mypry": {
+    "command": "/path/to/node",
+    "args": ["/path/to/mypry/dist/cli.js", "attach", "--mcp", "--workers"]
+  }
+}
+```
+
+Antigravity can then call `mcp_mypry_debugger_state`, `mcp_mypry_debugger_eval`, etc. directly.
+
+**Typical Antigravity workflow:**
+
+```
+1. mcp_mypry_debugger_state
+   → "paused at auth.service.ts:151"
+
+2. mcp_mypry_debugger_eval {expr: "emailAddress"}
+   → "superadmin@test.com"
+
+3. mcp_mypry_debugger_set_breakpoint {
+     file: "auth.service.ts",
+     line: 200,
+     condition: "statusCode >= 500"
+   }
+
+4. mcp_mypry_debugger_trace_start {maxBuffer: 100}
+5. (trigger test actions)
+6. mcp_mypry_debugger_trace_stop
+   → {count: 3, hits: [...]}
+```
+
+### Codex (OpenAI)
+
+Codex doesn't support MCP yet. Use the HTTP API instead:
+
+```bash
+# Start mypry HTTP alongside your process
+mypry attach --http-only --http=3098 --workers --token "codex:rw"
+```
+
+Then Codex can use shell commands:
+
+```bash
+# Inspect
+curl -H "Authorization: Bearer codex" http://localhost:3098/state
+
+# Eval
+curl -H "Authorization: Bearer codex" -X POST http://localhost:3098/command \
+  -d '{"op":"eval","expr":"user.role"}'
+
+# Trace
+curl -H "Authorization: Bearer codex" -X POST http://localhost:3098/command \
+  -d '{"op":"trace_start"}'
+```
+
+### Agent Best Practices
+
+1. **Always call `debugger_state` first** to understand where you are before taking action.
+
+2. **Use trace mode for multi-step flows.** Start trace → trigger the flow → stop trace → analyze all hits at once. Much more efficient than stepping through.
+
+3. **Conditional breakpoints save time.** Instead of pausing on every request, set `condition: "user.role === 'admin'"` to only catch what matters.
+
+4. **`debugger_continue` blocks!** It waits until the next pause. Only call it when you expect another breakpoint to fire. For long-running processes, use trace mode instead.
+
+5. **Batch operations** (HTTP only) let you eval multiple expressions in one call:
+   ```bash
+   curl -X POST localhost:3098/batch -d '{
+     "ops": [
+       {"op": "eval", "expr": "user.email"},
+       {"op": "eval", "expr": "user.role"},
+       {"op": "eval", "expr": "order.total"}
+     ]
+   }'
+   ```
