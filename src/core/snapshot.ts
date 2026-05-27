@@ -1,11 +1,12 @@
 /**
  * Snapshot + shared helpers.
  *
- * Mechanical translation from mypry.js lines 219, 246-252, 509-534.
- * DO NOT change behavior — this is load-bearing.
+ * Builds the state object that all transports return to agents/clients.
+ * Resolves source maps so TypeScript projects show .ts paths + line numbers.
  */
 
 import type { DebuggerSession } from './session.js'
+import { resolveOriginalPosition, readOriginalSource } from './sourcemap.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -48,19 +49,40 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
   if (!frame) return { status: 'running' }
   const scriptId = frame.location.scriptId
   const s = await session.getSource(scriptId)
-  const line = frame.location.lineNumber
-  const lines = (s?.source || '').split('\n')
+  const compiledLine = frame.location.lineNumber   // 0-based
+  const compiledFile = cleanUrl(s?.url)
+  const compiledSource = s?.source || ''
+
+  // Try source map resolution: dist/foo.js → src/foo.ts
+  let file = compiledFile
+  let line1 = compiledLine + 1  // 1-based
+  let sourceLines = compiledSource.split('\n')
+
+  const original = await resolveOriginalPosition(compiledFile, compiledSource, line1, 0)
+  if (original) {
+    file = original.source
+    line1 = original.line
+    // Read the original .ts source for the source window
+    const origSource = readOriginalSource(original.source)
+    if (origSource) {
+      sourceLines = origSource.split('\n')
+    }
+  }
+
+  // Build source window (±4 lines around current)
   const ctx = 4
-  const start = Math.max(0, line - ctx)
-  const end = Math.min(lines.length - 1, line + ctx)
+  const currentIdx = line1 - 1  // 0-based index
+  const start = Math.max(0, currentIdx - ctx)
+  const end = Math.min(sourceLines.length - 1, currentIdx + ctx)
   const sourceWindow: SourceWindowLine[] = []
   for (let i = start; i <= end; i++) {
-    sourceWindow.push({ line: i + 1, text: lines[i] ?? '', current: i === line })
+    sourceWindow.push({ line: i + 1, text: sourceLines[i] ?? '', current: i === currentIdx })
   }
+
   return {
     status: 'paused',
-    file: cleanUrl(s?.url),
-    line: line + 1,
+    file,
+    line: line1,
     function: frame.functionName || '<anon>',
     reason: session.currentPause?.reason || null,
     source_window: sourceWindow,

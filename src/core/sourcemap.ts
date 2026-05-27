@@ -7,27 +7,31 @@
 
 import { SourceMapConsumer, type RawSourceMap } from 'source-map'
 import fs from 'node:fs'
+import path from 'node:path'
 
 const consumerCache = new Map<string, SourceMapConsumer | null>()
 
 export interface OriginalPosition {
-  source: string | null
-  line: number | null
+  source: string  // absolute path to original .ts file
+  line: number
   column: number | null
 }
 
 /**
  * Attempt to load a source map for the given JS file.
- * Looks for inline `//# sourceMappingURL=` and tries to load the map.
- * Returns null if no map is found.
+ * Tries:
+ *   1. Inline sourceMappingURL (data: URI)
+ *   2. External .map file relative to the JS file path
  */
-async function loadSourceMap(source: string): Promise<SourceMapConsumer | null> {
-  if (consumerCache.has(source)) return consumerCache.get(source)!
+async function loadSourceMap(
+  sourceCode: string,
+  filePath: string
+): Promise<SourceMapConsumer | null> {
+  if (consumerCache.has(filePath)) return consumerCache.get(filePath)!
 
   let consumer: SourceMapConsumer | null = null
   try {
-    // Look for sourceMappingURL in the source
-    const match = source.match(/\/\/[#@]\s*sourceMappingURL\s*=\s*(.+?)$/m)
+    const match = sourceCode.match(/\/\/[#@]\s*sourceMappingURL\s*=\s*(.+?)$/m)
     if (match) {
       const url = match[1].trim()
       if (url.startsWith('data:')) {
@@ -36,41 +40,67 @@ async function loadSourceMap(source: string): Promise<SourceMapConsumer | null> 
         const json = Buffer.from(b64, 'base64').toString('utf8')
         consumer = await new SourceMapConsumer(JSON.parse(json) as RawSourceMap)
       } else {
-        // External file — try to read it
+        // External file — resolve relative to the JS file
+        const dir = path.dirname(filePath)
+        const mapPath = path.resolve(dir, url)
         try {
-          const mapContent = fs.readFileSync(url, 'utf8')
+          const mapContent = fs.readFileSync(mapPath, 'utf8')
           consumer = await new SourceMapConsumer(JSON.parse(mapContent) as RawSourceMap)
         } catch {
-          // File might be relative or not found — that's OK
+          // Also try .map appended to JS filename
+          try {
+            const mapContent = fs.readFileSync(filePath + '.map', 'utf8')
+            consumer = await new SourceMapConsumer(JSON.parse(mapContent) as RawSourceMap)
+          } catch { /* no map found */ }
         }
       }
     }
-  } catch {
-    // Source map parsing failed — ignore
-  }
+  } catch { /* source map parsing failed */ }
 
-  consumerCache.set(source, consumer)
+  consumerCache.set(filePath, consumer)
   return consumer
 }
 
 /**
  * Resolve the original source position from a compiled position.
- * Returns the original position if a source map is available, or null.
+ *
+ * @param filePath  Absolute path to the compiled JS file
+ * @param sourceCode  The compiled JS source code
+ * @param line  1-based line number in the compiled file
+ * @param column  0-based column number (default 0)
+ * @returns Original position with absolute path, or null
  */
 export async function resolveOriginalPosition(
-  compiledSource: string,
+  filePath: string,
+  sourceCode: string,
   line: number,
-  column: number
+  column: number = 0
 ): Promise<OriginalPosition | null> {
-  const consumer = await loadSourceMap(compiledSource)
+  const consumer = await loadSourceMap(sourceCode, filePath)
   if (!consumer) return null
 
-  const pos = consumer.originalPositionFor({ line, column })
-  if (!pos.source) return null
+  // Source maps may not have a mapping at column 0 (indented code).
+  // Scan columns to find the first valid mapping on this line.
+  for (let col = column; col < 80; col++) {
+    const pos = consumer.originalPositionFor({ line, column: col })
+    if (pos.source && pos.line !== null) {
+      const dir = path.dirname(filePath)
+      const absoluteSource = path.resolve(dir, pos.source)
+      return { source: absoluteSource, line: pos.line, column: pos.column }
+    }
+  }
 
-  return {
-    source: pos.source,
-    line: pos.line,
-    column: pos.column,
+  return null
+}
+
+/**
+ * Read the original .ts source file and return its lines.
+ * Returns null if the file can't be read.
+ */
+export function readOriginalSource(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8')
+  } catch {
+    return null
   }
 }
