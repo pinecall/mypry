@@ -36,13 +36,7 @@ export async function executeOp(
 
     case 'continue': {
       await session.resume()
-      const result = await Promise.race([
-        session.waitNextPause().then(() => 'paused'),
-        new Promise<string>((r) => session.cdp.onClose(() => r('terminated'))),
-      ])
-      if (result === 'terminated') return { status: 'terminated' }
-      if (session.topFrame()) await session.getSource(session.topFrame().location.scriptId)
-      return snapshot(session)
+      return { status: 'running' }
     }
 
     case 'eval': {
