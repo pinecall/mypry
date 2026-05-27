@@ -57,6 +57,22 @@ async function pickServer(servers: string[]): Promise<string> {
   })
 }
 
+/** Find Chrome/Chromium binary on disk */
+async function findChrome(): Promise<string> {
+  const { existsSync } = await import('node:fs')
+  const paths = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+  ]
+  for (const p of paths) {
+    if (existsSync(p)) return p
+  }
+  process.stderr.write('[mypry] error: Chrome not found\n')
+  process.exit(1)
+}
+
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({
     options: {
@@ -77,24 +93,85 @@ async function main(): Promise<void> {
 
   if (values.help || positionals[0] === 'help') {
     process.stdout.write(
-      `mypry attach [--host HOST] [--port PORT] [--url WS_URL] [--json|--mcp] [--http[=PORT]]\n\n` +
-      `Stdio transports (pick one):\n` +
-      `  (none)         human REPL (default)\n` +
-      `  --json         ndjson stdio (for embedders like Aurora)\n` +
-      `  --mcp          MCP server on stdio (for Claude Code, Cursor)\n\n` +
-      `Side transport (combinable with any stdio mode):\n` +
-      `  --http[=PORT]  HTTP server (default port 3099)\n` +
-      `  --http-only    HTTP only, no stdio transport\n\n` +
-      `Frontend debugging:\n` +
-      `  --chrome [URL]  launch Chrome with CDP (auto-detects dev server if no URL)\n\n` +
+      `mypry - inline debugger for Node.js and the browser\n\n` +
+      `Commands:\n` +
+      `  mypry attach [options]   Attach to a running process\n` +
+      `  mypry open [URL]         Launch Chrome with debugger port\n\n` +
+      `Attach options:\n` +
+      `  --port PORT        V8 inspector port (default: 9229)\n` +
+      `  --host HOST        Inspector host (default: 127.0.0.1)\n` +
+      `  --url WS_URL       Direct WebSocket URL\n\n` +
+      `  --json             ndjson stdio transport\n` +
+      `  --mcp              MCP server on stdio\n` +
+      `  --http[=PORT]      HTTP API server (default: 3099)\n` +
+      `  --http-only        HTTP only, no stdio transport\n` +
+      `  --chrome           Also launch Chrome for frontend debugging\n\n` +
       `Examples:\n` +
-      `  mypry attach                                # backend only\n` +
-      `  mypry attach --chrome                       # auto-detect frontend\n` +
-      `  mypry attach --chrome http://localhost:5178  # explicit frontend URL\n` +
-      `  mypry attach --json                      # Aurora mode\n` +
-      `  mypry attach --mcp                       # MCP for Claude Code\n`
+      `  mypry open                                  # auto-detect dev server, launch Chrome\n` +
+      `  mypry open http://localhost:5173             # explicit URL\n` +
+      `  mypry attach                                # backend REPL\n` +
+      `  mypry attach --chrome                       # backend + frontend\n` +
+      `  mypry attach --json                         # ndjson for embedders\n` +
+      `  mypry attach --mcp                          # MCP for Claude Code\n`
     )
     return
+  }
+
+  // ── `mypry open [URL]` — launch Chrome with CDP ──
+
+  if (positionals[0] === 'open') {
+    const explicitUrl = positionals[1] || positionals.find(p => p.startsWith('http://') || p.startsWith('https://'))
+    let chromeUrl: string
+
+    if (explicitUrl) {
+      chromeUrl = explicitUrl.startsWith('http') ? explicitUrl : `http://${explicitUrl}`
+    } else {
+      process.stderr.write(`[mypry] scanning for dev servers...\n`)
+      const servers = await detectDevServers()
+      if (servers.length === 0) {
+        process.stderr.write('[mypry] no dev server found. Pass a URL: mypry open http://localhost:PORT\n')
+        process.exit(1)
+      } else if (servers.length === 1) {
+        chromeUrl = servers[0]
+      } else {
+        chromeUrl = await pickServer(servers)
+      }
+    }
+
+    process.stderr.write(`[mypry] opening Chrome → ${chromeUrl}\n`)
+
+    // Kill any previous debug Chrome
+    try {
+      const { execSync } = await import('node:child_process')
+      execSync('pkill -f "remote-debugging-port=9222" 2>/dev/null', { stdio: 'ignore' })
+      await new Promise(r => setTimeout(r, 500))
+    } catch {}
+
+    const chromePath = await findChrome()
+    const { spawn } = await import('node:child_process')
+    const chromeProc = spawn(chromePath, [
+      `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--user-data-dir=/tmp/mypry-chrome-debug',
+      chromeUrl,
+    ], { stdio: 'ignore', detached: true })
+    chromeProc.unref()
+
+    // Wait for CDP to be ready
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      try {
+        const targets = await discoverTargets('127.0.0.1', CHROME_DEBUG_PORT)
+        if (targets.some(t => t.kind === 'chrome')) {
+          process.stderr.write(`[mypry] ✅ Chrome ready — CDP on port ${CHROME_DEBUG_PORT}\n`)
+          process.stderr.write(`[mypry] debugger statements will now pause in mypry\n`)
+          process.exit(0)
+        }
+      } catch {}
+    }
+    process.stderr.write('[mypry] ✅ Chrome launched (CDP may take a moment)\n')
+    process.exit(0)
   }
 
   // ── Frontend session (Chrome CDP) — launch first so user can interact ──
@@ -134,20 +211,7 @@ async function main(): Promise<void> {
     } catch {}
 
     // Launch Chrome with remote debugging
-    const chromePaths = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium-browser',
-    ]
-    let chromePath = ''
-    const { existsSync } = await import('node:fs')
-    for (const p of chromePaths) {
-      if (existsSync(p)) { chromePath = p; break }
-    }
-    if (!chromePath) {
-      process.stderr.write('[mypry] error: Chrome not found\n')
-      process.exit(1)
-    }
+    const chromePath = await findChrome()
 
     const { spawn } = await import('node:child_process')
     const chromeProc = spawn(chromePath, [
