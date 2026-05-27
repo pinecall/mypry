@@ -344,6 +344,163 @@ await fetch(`${BASE}/command`, {
 })
 ```
 
+## Programmatic API (Core Exports)
+
+mypry exports its internals for embedders — build your own debugger UI, TUI, or agent integration:
+
+```typescript
+import {
+  CDPClient,
+  DebuggerSession,
+  snapshot,
+  discoverTargets,
+  matchTarget,
+  executeOp,
+} from 'mypry/core'
+```
+
+### CDPClient
+
+Minimal Chrome DevTools Protocol client over WebSocket. Zero dependencies.
+
+```typescript
+const cdp = new CDPClient('ws://127.0.0.1:9229/...')
+await cdp.connect()
+
+// Send CDP commands
+await cdp.send('Debugger.enable')
+await cdp.send('Debugger.resume')
+
+// Listen for events
+cdp.on('Debugger.paused', (params) => { /* ... */ })
+cdp.on('Debugger.resumed', () => { /* ... */ })
+cdp.onClose(() => { /* reconnect logic */ })
+```
+
+### DebuggerSession
+
+Manages a CDP debugging session — pause, step, eval, breakpoints.
+
+```typescript
+const session = new DebuggerSession(cdp)
+await session.init()
+
+// Evaluate in the paused frame (handles Vue/Pinia reactive objects)
+const result = await session.evalInFrame('user.emailAddress')
+// → { result: { type: 'string', value: 'alice@test.com' } }
+
+// Get all local variables
+const locals = await session.getLocals()
+// → { emailAddress: 'alice@test.com', isMatch: true }
+
+// Stepping
+await session.stepOver()
+await session.stepInto()
+await session.stepOut()
+
+// Resume (returns immediately — non-blocking)
+await session.resume()
+
+// Set/remove breakpoints
+const bpId = await session.setBreakpoint('auth.service.ts', 42)
+await session.removeBreakpoint(bpId)
+
+// Wait for next pause
+await session.waitNextPause()
+
+// Pause a running target
+await session.pause()
+```
+
+**Smart serialization:** `evalInFrame` auto-unwraps Vue `ref()`, Pinia `$state`,
+and `reactive()` proxies. Handles circular references safely.
+
+### Target Discovery
+
+```typescript
+// Find Node.js inspector targets
+const nodeTargets = await discoverTargets('127.0.0.1', 9229)
+// → [{ kind: 'node', wsUrl: 'ws://...', title: 'server.js' }]
+
+// Find Chrome tabs
+const chromeTargets = await discoverTargets('127.0.0.1', 9222)
+// → [{ kind: 'chrome', wsUrl: 'ws://...', title: 'MyApp', url: 'http://localhost:3001' }]
+
+// Match by tab title or URL
+const tab = matchTarget(chromeTargets, { tabUrl: 'localhost:3001' })
+```
+
+### executeOp
+
+Shared operation dispatch — same ops used by all transports:
+
+```typescript
+const result = await executeOp(session, 'eval', { expr: 'users.length' })
+// → { ok: true, type: 'number', value: 42 }
+
+await executeOp(session, 'continue')
+// → { status: 'running' }
+
+await executeOp(session, 'step_over')
+// → { status: 'paused', file: '...', line: 43, ... }
+```
+
+All ops: `state`, `eval`, `continue`, `step_over`, `step_into`, `step_out`,
+`locals`, `backtrace`, `source`, `set_breakpoint`, `remove_breakpoint`,
+`breakpoints`, `pause`, `quit`.
+
+### snapshot
+
+Build a full state snapshot from a session:
+
+```typescript
+const snap = await snapshot(session)
+// When paused:
+// → { status: 'paused', file: 'auth.service.ts', line: 152,
+//     function: 'validateUser', source_window: [...], locals: {...} }
+// When running:
+// → { status: 'running' }
+```
+
+### Multi-Session Example (Backend + Frontend)
+
+```typescript
+import { CDPClient, DebuggerSession, discoverTargets, snapshot } from 'mypry/core'
+
+// Connect backend (Node.js inspector)
+const backendTargets = await discoverTargets('127.0.0.1', 9229)
+const backendCdp = new CDPClient(backendTargets[0].wsUrl)
+await backendCdp.connect()
+const backend = new DebuggerSession(backendCdp)
+await backend.init()
+
+// Connect frontend (Chrome CDP)
+const chromeTargets = await discoverTargets('127.0.0.1', 9222)
+const chromeCdp = new CDPClient(chromeTargets[0].wsUrl)
+await chromeCdp.connect()
+const frontend = new DebuggerSession(chromeCdp)
+await frontend.init()
+
+// Listen for pauses on either side
+let activeSession = backend
+
+backendCdp.on('Debugger.paused', async () => {
+  activeSession = backend
+  console.log('BACKEND paused:', await snapshot(backend))
+})
+
+chromeCdp.on('Debugger.paused', async () => {
+  activeSession = frontend
+  console.log('FRONTEND paused:', await snapshot(frontend))
+})
+
+// Auto-reconnect backend on restart
+backendCdp.onClose(() => {
+  console.log('Backend disconnected — reconnecting...')
+  // ... retry logic
+})
+```
+
 ## AI Agent Modes
 
 ### JSON (ndjson stdio)
@@ -355,11 +512,14 @@ mypry attach --json
 Newline-delimited JSON on stdin/stdout:
 
 ```json
-→ {"action":"eval","expression":"users.length"}
-← {"ok":true,"value":3}
+→ {"op":"eval","expr":"users.length"}
+← {"ok":true,"type":"number","value":3}
 
-→ {"action":"continue"}
-← {"ok":true,"running":true}
+→ {"op":"continue"}
+← {"status":"running"}
+
+→ {"op":"state"}
+← {"status":"paused","file":"server.js","line":42,"locals":{...}}
 ```
 
 ### MCP (Model Context Protocol)
@@ -372,12 +532,32 @@ MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
 
 | Tool | Description |
 |------|-------------|
-| `get_state` | Current pause location, source, and locals |
-| `eval` | Evaluate expression in current frame |
-| `step_over` / `step_into` / `step_out` | Stepping |
-| `continue` | Resume |
-| `set_breakpoint` / `remove_breakpoint` | Breakpoint management |
-| `get_snapshot` | Full state snapshot |
+| `debugger_state` | Current pause location, source, and locals |
+| `debugger_eval` | Evaluate expression in current frame |
+| `debugger_step` | Step over/into/out (with `mode` param) |
+| `debugger_continue` | Resume execution |
+| `debugger_set_breakpoint` | Set breakpoint at file:line |
+| `debugger_remove_breakpoint` | Remove breakpoint by ID |
+| `debugger_list_breakpoints` | List active breakpoints |
+| `debugger_pause` | Force pause on running target |
+| `debugger_backtrace` | Call stack frames |
+| `debugger_source` | Full source of current file |
+
+### HTTP API
+
+```bash
+mypry attach --http              # alongside REPL
+mypry attach --http-only         # standalone API (no REPL)
+mypry attach --http=4000         # custom port (default: 3099)
+```
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | `{ok, connected, status}` |
+| GET | `/state` | Full paused state snapshot |
+| GET | `/backtrace` | Call stack frames |
+| GET | `/breakpoints` | Active breakpoints |
+| POST | `/command` | Any op: `{op, ...params}` |
 
 ## CLI Reference
 
@@ -411,19 +591,27 @@ Examples:
 ## Architecture
 
 ```
-Your Code                    mypry CLI
-─────────                    ─────────
-                             ┌──────────────────────┐
-  debugger ── V8 Inspector ──→│                      │
-  (Node)      (port 9229)    │   DebuggerSession     │
-                             │                      │
-  debugger ── Chrome CDP ───→│   ┌──── REPL          │
-  (Browser)   (port 9222)    │   ├──── JSON (ndjson) │
-                             │   ├──── MCP           │
-  pry()  ─── V8 Inspector ──→│   └──── HTTP API      │
-  (standalone)               │                      │
-                             │   Auto-reconnect ♻️    │
-                             └──────────────────────┘
+Your Code                    mypry
+─────────                    ─────
+                             ┌──────────────────────────┐
+  debugger ── V8 Inspector ──→│                          │
+  (Node)      (port 9229)    │   DebuggerSession         │
+                             │   ├── pause/step/eval     │
+  debugger ── Chrome CDP ───→│   ├── smart serialization │
+  (Browser)   (port 9222)    │   └── auto-reconnect ♻️   │
+                             │                          │
+  pry()  ─── V8 Inspector ──→│   Transports:             │
+  (standalone)               │   ├── REPL (terminal)     │
+                             │   ├── JSON (ndjson stdio)  │
+                             │   ├── MCP  (Claude Code)   │
+                             │   └── HTTP (REST API)      │
+                             │                          │
+                             │   Core (importable):       │
+                             │   ├── CDPClient            │
+                             │   ├── DebuggerSession      │
+                             │   ├── snapshot / executeOp │
+                             │   └── discoverTargets      │
+                             └──────────────────────────┘
 ```
 
 | Module | Purpose |
@@ -435,6 +623,7 @@ Your Code                    mypry CLI
 | `src/core/ops.ts` | Shared operation dispatch (used by all transports) |
 | `src/core/targets.ts` | Target discovery (Node inspector + Chrome tabs) |
 | `src/core/snapshot.ts` | State snapshot builder |
+| `src/core/sourcemap.ts` | Source map resolution for TypeScript |
 | `src/transports/repl.ts` | Human REPL with ANSI colors |
 | `src/transports/ndjson.ts` | JSON stdio transport |
 | `src/transports/mcp.ts` | MCP server transport |
