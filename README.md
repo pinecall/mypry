@@ -1,8 +1,8 @@
 # mypry
 
-Inline debugger for Node.js and the browser. Drop `pry()` anywhere — execution pauses and waits for you.
+Inline debugger for Node.js and the browser — zero config, zero imports.
 
-Built for **AI pair programming**: your agent attaches via MCP or JSON, inspects variables, steps through code, and continues — programmatically.
+Drop a `debugger` statement anywhere. mypry connects via Chrome DevTools Protocol and drops you into a REPL at the exact pause point. Built for **AI pair programming**: agents attach via HTTP, MCP, or JSON to inspect, step, and continue — programmatically.
 
 ```
 npm install mypry
@@ -10,42 +10,67 @@ npm install mypry
 
 ## Quick Start
 
-### 1. Drop `pry()` in your code
+### Zero-import mode (recommended)
+
+Just use the native `debugger` statement — no imports needed:
 
 ```js
-const pry = require('mypry')
-
+// server.js
 function handleRequest(req) {
   const users = db.getUsers()
-  pry()  // ← execution pauses here, waiting for a client
+  debugger  // ← pauses here when mypry is attached
   return users
 }
 ```
 
-### 2. Attach the debugger
-
 ```bash
-# Run your app — it blocks at pry()
-node server.js
+# Start your app with --inspect
+node --inspect server.js
 
 # In another terminal:
 mypry attach
 ```
 
 ```
-─── server.js:5  handleRequest ───
-  3 │ function handleRequest(req) {
-  4 │   const users = db.getUsers()
-  5 │   pry()
-► 6 │   return users
-  7 │ }
+─── server.js:4  handleRequest ───
+  2 │ function handleRequest(req) {
+  3 │   const users = db.getUsers()
+► 4 │   debugger
+  5 │   return users
+  6 │ }
 
 (mypry) users
 => [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
 (mypry) continue
 ```
 
-That's it. `pry()` opens the V8 inspector and blocks. `mypry attach` connects via CDP and drops you into a REPL at the exact line where `pry()` was called.
+> **How it works:** `node --inspect` opens the V8 inspector on port 9229. `mypry attach` connects via CDP, enables `Debugger.enable()`, and any `debugger` statement pauses execution. No library import needed.
+
+### pry() mode (standalone scripts)
+
+If your app doesn't start with `--inspect`, use `pry()` to open the inspector dynamically:
+
+```js
+const pry = require('mypry')
+
+function handleRequest(req) {
+  const users = db.getUsers()
+  pry()  // opens inspector AND pauses — blocks until a client connects
+  return users
+}
+```
+
+```bash
+node server.js        # no --inspect needed, pry() handles it
+mypry attach          # connects to the inspector pry() opened
+```
+
+### When to use which
+
+| Mode | Use when | Import needed | App flag needed |
+|------|----------|---------------|-----------------|
+| `debugger` | App starts with `--inspect` / `--debug` | No | `--inspect` |
+| `pry()` | Standalone scripts, no inspector flag | `require('mypry')` | None |
 
 ## pry() Options
 
@@ -54,12 +79,6 @@ pry()                                    // default port 9229
 pry({ port: 9235 })                      // custom port
 pry({ message: 'before DB query' })      // log a label when it pauses
 pry({ port: 9235, host: '127.0.0.1' })  // custom host + port
-```
-
-If you use a custom port, pass `--port` to the CLI:
-
-```bash
-mypry attach --port 9235
 ```
 
 ## REPL Commands
@@ -82,7 +101,7 @@ mypry attach --port 9235
 
 ## Frontend Debugging
 
-### 1. Add `debugger` in your React / Vue / Svelte code
+### 1. Add `debugger` in your component
 
 ```tsx
 // React
@@ -90,7 +109,7 @@ function UserList() {
   const [users, setUsers] = useState([])
   const loadUsers = async () => {
     const data = await fetch('/api/users').then(r => r.json())
-    debugger  // ← pauses here when mypry is attached
+    debugger  // ← pauses here when Chrome debug is attached
     setUsers(data)
   }
   return <button onClick={loadUsers}>Load</button>
@@ -102,19 +121,25 @@ function UserList() {
 <script setup>
 onMounted(async () => {
   await store.loadUsers()
-  debugger  // ← pauses here when mypry is attached
+  debugger  // ← pauses here when Chrome debug is attached
 })
 </script>
 ```
 
-### 2. Attach with `--chrome`
+### 2. Open Chrome with debug port
 
 ```bash
-mypry attach --chrome                        # auto-detect dev server
-mypry attach --chrome http://localhost:5173   # explicit URL
+mypry open                          # auto-detect dev server, launch Chrome
+mypry open http://localhost:5173    # explicit URL
 ```
 
-Without a URL, mypry scans common dev ports (3000, 5173–5180, 8080, 4200) and opens the first one it finds. If you have multiple servers running, it prompts you to pick.
+This launches Chrome with `--remote-debugging-port=9222`. Any `debugger` statement in the page will pause when mypry attaches.
+
+### 3. Attach
+
+```bash
+mypry attach --chrome    # connects to both backend (9229) and Chrome (9222)
+```
 
 When a frontend `debugger` fires, the REPL shows your component code:
 
@@ -143,59 +168,67 @@ mypry automatically handles Vue reactive objects and Pinia stores:
 | Circular refs | Marked as `[Circular]` |
 | Functions | Shown as `[Function: name]` |
 
-This works for **any framework** — the Vue checks are no-ops for React/Angular/vanilla.
+This works for **any framework** — the Vue/Pinia checks are harmless no-ops for React/Angular/vanilla JS.
 
 ### Fullstack (backend + frontend in one REPL)
 
-If your backend also uses `pry()`, both pause in the same session:
-
 ```bash
-mypry attach --port 9229 --chrome
+mypry attach --chrome
 ```
 
 Click a button → backend pauses → inspect → `continue` → frontend pauses → inspect → `continue`. The REPL labels each pause:
 
 ```
 ━━━ BACKEND ━━━
-─── server.js:12  <anon> ───
-► 12 │   res.json({ users: result })
+─── auth.service.ts:152  validateUser ───
+► 152 │   debugger
 
+(mypry|backend) user.emailAddress
+=> "alice@example.com"
 (mypry|backend) continue
 
 ━━━ FRONTEND ━━━
-─── App.tsx:55  loadUsers ───
-► 55 │     setUsers(data.users)
+─── Dashboard.vue:78  onMounted ───
+► 78 │   debugger
 
+(mypry|frontend) authStore
+=> {"user": {"name": "Alice"}, "isAdmin": true}
 (mypry|frontend) continue
 ```
 
+## Auto-Reconnect
+
+mypry survives process restarts. When the backend restarts (nodemon, NestJS `--watch`, ts-node-dev), the CDP WebSocket closes and mypry automatically reconnects:
+
+```
+[mypry] backend disconnected — reconnecting...
+[mypry] ✅ backend reconnected
+```
+
+No manual intervention needed. Retries every 2s for up to 20 attempts (40s window). Works for all modes: REPL, JSON, MCP, HTTP.
+
 ### Debugger Detection (No-Attach Warning)
 
-Use the timing trick to warn users when no debugger is attached:
+Use the timing trick to warn when no debugger is attached:
 
 ```js
 const _t = performance.now()
 debugger
 if (performance.now() - _t < 50) {
-  console.warn('[mypry] debugger skipped — no CDP debugger attached')
+  console.warn('debugger skipped — no CDP debugger attached')
 }
 ```
 
-If Chrome was launched without `--remote-debugging-port`, the `debugger` statement is a no-op. The timing check detects this and logs a helpful warning.
+If Chrome was launched without `--remote-debugging-port`, the `debugger` statement is a no-op (takes <1ms). The timing check detects this and logs a warning.
 
 ## Programmatic API (HTTP)
 
 ### Start the HTTP server
 
 ```bash
-# Alongside REPL
-mypry attach --http
-
-# Standalone (no REPL, just API)
-mypry attach --http-only
-
-# Custom port (default: 3099)
-mypry attach --http=4000
+mypry attach --http              # alongside REPL
+mypry attach --http-only         # standalone API (no REPL)
+mypry attach --http=4000         # custom port (default: 3099)
 ```
 
 ### Endpoints
@@ -203,7 +236,7 @@ mypry attach --http=4000
 #### `GET /health`
 
 ```bash
-curl http://localhost:3099/health
+curl localhost:3099/health
 ```
 ```json
 {"ok": true, "connected": true, "status": "paused"}
@@ -211,27 +244,21 @@ curl http://localhost:3099/health
 
 #### `GET /state`
 
-Returns current debugger state — pause location, source context, locals.
-
 ```bash
-curl http://localhost:3099/state
+curl localhost:3099/state
 ```
 ```json
 {
   "status": "paused",
-  "file": "src/auth/auth.service.ts",
+  "file": "auth.service.ts",
   "line": 152,
   "function": "validateUser",
-  "source": "...",
   "locals": {"emailAddress": "alice@example.com", "user": {...}}
 }
 ```
 
 #### `GET /backtrace`
 
-```bash
-curl http://localhost:3099/backtrace
-```
 ```json
 {
   "frames": [
@@ -241,68 +268,38 @@ curl http://localhost:3099/backtrace
 }
 ```
 
-#### `GET /breakpoints`
-
-```bash
-curl http://localhost:3099/breakpoints
-```
-```json
-{
-  "breakpoints": [
-    {"id": "1", "file": "auth.service.ts", "line": 88}
-  ]
-}
-```
-
 #### `POST /command`
 
-Execute any debugger operation. This is the universal endpoint.
+Universal endpoint for all debugger operations:
 
 ```bash
-# Evaluate an expression
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "eval", "expr": "users.length"}'
-# => {"ok": true, "type": "number", "value": 3}
+# Evaluate
+curl -X POST localhost:3099/command -d '{"op":"eval","expr":"users.length"}'
+# => {"ok":true,"value":3}
 
-# Continue execution
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "continue"}'
-# => {"status": "paused", "file": "next-file.ts", ...}
+# Continue
+curl -X POST localhost:3099/command -d '{"op":"continue"}'
 
-# Step over
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "step_over"}'
+# Step over / into / out
+curl -X POST localhost:3099/command -d '{"op":"step_over"}'
+curl -X POST localhost:3099/command -d '{"op":"step_into"}'
+curl -X POST localhost:3099/command -d '{"op":"step_out"}'
 
-# Step into / out
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "step_into"}'
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "step_out"}'
+# Locals
+curl -X POST localhost:3099/command -d '{"op":"locals"}'
 
-# Get locals
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "locals"}'
-# => {"locals": {"req": {...}, "users": [...]}}
+# Breakpoints
+curl -X POST localhost:3099/command \
+  -d '{"op":"set_breakpoint","file":"auth.service.ts","line":88}'
+curl -X POST localhost:3099/command -d '{"op":"remove_breakpoint","id":"1"}'
+curl -X POST localhost:3099/command -d '{"op":"breakpoints"}'
 
-# Set a breakpoint
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "set_breakpoint", "file": "auth.service.ts", "line": 88}'
-# => {"ok": true, "id": "1", "file": "auth.service.ts", "line": 88}
-
-# Remove a breakpoint
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "remove_breakpoint", "id": "1"}'
-
-# Pause a running target
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "pause"}'
-
-# Get full state
-curl -X POST http://localhost:3099/command \
-  -d '{"op": "state"}'
+# Pause / State
+curl -X POST localhost:3099/command -d '{"op":"pause"}'
+curl -X POST localhost:3099/command -d '{"op":"state"}'
 ```
 
-### Available Operations
+### Operations Reference
 
 | Op | Params | Description |
 |----|--------|-------------|
@@ -321,29 +318,24 @@ curl -X POST http://localhost:3099/command \
 | `pause` | — | Force pause on running target |
 | `quit` | — | Disconnect |
 
-### Integration Example (AI Agent)
+### Agent Integration Example
 
 ```typescript
-// Agent workflow: inspect a paused backend
 const BASE = 'http://localhost:3099'
 
 // 1. Check if paused
 const health = await fetch(`${BASE}/health`).then(r => r.json())
-if (health.status !== 'paused') {
-  console.log('Not paused, nothing to inspect')
-  return
-}
+if (health.status !== 'paused') return
 
-// 2. Get current state
+// 2. Inspect
 const state = await fetch(`${BASE}/state`).then(r => r.json())
-console.log(`Paused at ${state.file}:${state.line} in ${state.function}`)
+console.log(`Paused at ${state.file}:${state.line}`)
 
-// 3. Evaluate variables
+// 3. Evaluate
 const result = await fetch(`${BASE}/command`, {
   method: 'POST',
   body: JSON.stringify({ op: 'eval', expr: 'user.emailAddress' }),
 }).then(r => r.json())
-console.log(`User: ${result.value}`)
 
 // 4. Continue
 await fetch(`${BASE}/command`, {
@@ -360,7 +352,7 @@ await fetch(`${BASE}/command`, {
 mypry attach --json
 ```
 
-Newline-delimited JSON on stdin/stdout. For embedding in AI tools.
+Newline-delimited JSON on stdin/stdout:
 
 ```json
 → {"action":"eval","expression":"users.length"}
@@ -390,26 +382,30 @@ MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
 ## CLI Reference
 
 ```
-mypry attach [options]
+mypry - inline debugger for Node.js and the browser
 
-Connection:
+Commands:
+  mypry attach [options]   Attach to a running process
+  mypry open [URL]         Launch Chrome with debugger port
+
+Attach options:
   --port PORT        V8 inspector port (default: 9229)
   --host HOST        Inspector host (default: 127.0.0.1)
   --url WS_URL       Direct WebSocket URL
-
-Transport:
-  (default)          Human REPL
-  --json             ndjson stdio
+  --json             ndjson stdio transport
   --mcp              MCP server on stdio
-
-Side transport:
   --http[=PORT]      HTTP API server (default: 3099)
   --http-only        HTTP only, no stdio transport
+  --chrome           Also launch Chrome for frontend debugging
 
-Frontend:
-  --chrome [URL]     Launch Chrome with CDP (auto-detects dev server)
-
-  -h, --help         Show help
+Examples:
+  mypry open                                  # launch Chrome debug
+  mypry open http://localhost:5173            # explicit dev server
+  mypry attach                               # backend REPL
+  mypry attach --chrome                      # backend + frontend
+  mypry attach --json                        # ndjson for embedders
+  mypry attach --mcp                         # MCP for Claude Code
+  mypry attach --http-only                   # headless API
 ```
 
 ## Architecture
@@ -417,35 +413,38 @@ Frontend:
 ```
 Your Code                    mypry CLI
 ─────────                    ─────────
-                             ┌──────────────────┐
-  pry()  ─── V8 Inspector ──→│  DebuggerSession  │
-  (Node)     (CDP)           │                    │
-                             │  ┌──── REPL        │
-  debugger ─ Chrome CDP ────→│  ├──── JSON        │
-  (Browser)                  │  ├──── MCP         │
-                             │  └──── HTTP API    │
-                             └──────────────────┘
+                             ┌──────────────────────┐
+  debugger ── V8 Inspector ──→│                      │
+  (Node)      (port 9229)    │   DebuggerSession     │
+                             │                      │
+  debugger ── Chrome CDP ───→│   ┌──── REPL          │
+  (Browser)   (port 9222)    │   ├──── JSON (ndjson) │
+                             │   ├──── MCP           │
+  pry()  ─── V8 Inspector ──→│   └──── HTTP API      │
+  (standalone)               │                      │
+                             │   Auto-reconnect ♻️    │
+                             └──────────────────────┘
 ```
 
 | Module | Purpose |
 |--------|---------|
-| `src/pry.ts` | Node.js `pry()` — opens inspector, fires `debugger` |
+| `src/pry.ts` | `pry()` — opens inspector dynamically, fires `debugger` |
 | `src/browser.ts` | Browser `pry()` — fires `debugger` for Chrome CDP |
-| `src/core/session.ts` | Debugger session — pause, step, eval, breakpoints |
+| `src/core/session.ts` | Debugger session — pause, step, eval, smart serialization |
 | `src/core/cdp-client.ts` | Raw WebSocket CDP client |
 | `src/core/ops.ts` | Shared operation dispatch (used by all transports) |
-| `src/core/targets.ts` | Target discovery |
+| `src/core/targets.ts` | Target discovery (Node inspector + Chrome tabs) |
 | `src/core/snapshot.ts` | State snapshot builder |
-| `src/transports/repl.ts` | Human REPL |
+| `src/transports/repl.ts` | Human REPL with ANSI colors |
 | `src/transports/ndjson.ts` | JSON stdio transport |
 | `src/transports/mcp.ts` | MCP server transport |
 | `src/transports/http.ts` | HTTP REST API transport |
-| `src/cli.ts` | CLI entry point |
+| `src/cli.ts` | CLI entry — `attach`, `open`, auto-reconnect |
 
 ## Requirements
 
 - Node.js ≥ 22
-- Chrome (for `--chrome`)
+- Chrome or Chromium (for `--chrome` / `open`)
 
 ## License
 
