@@ -185,6 +185,20 @@ export async function startHttpServer(
         opts.pairChannel?.emit('agent-action', body)
         const result = await executeOp(targetSession, body.op, body)
         opts.pairChannel?.emit('agent-result', { op: body.op, result })
+
+        // wait: true → block until next pause (for continue/step ops)
+        const WAIT_OPS = new Set(['continue', 'step_over', 'step_into', 'step_out'])
+        if (body.wait && WAIT_OPS.has(body.op) && result.status === 'running') {
+          const outcome = await Promise.race([
+            targetSession.waitNextPause().then(() => 'paused' as const),
+            new Promise<'timeout'>(r => setTimeout(() => r('timeout'), 30_000)),
+          ])
+          if (outcome === 'paused') {
+            return respond(res, 200, await snapshot(targetSession))
+          }
+          return respond(res, 200, { status: 'running', wait_timeout: true })
+        }
+
         return respond(res, 200, result)
       }
 
