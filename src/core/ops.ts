@@ -96,6 +96,24 @@ export async function executeOp(
       if (session.topFrame()) await session.getSource(session.topFrame().location.scriptId)
       return snapshot(session)
 
+    case 'trace_start': {
+      const maxBuffer = params.maxBuffer || 100
+      session.startTrace(maxBuffer)
+      return { ok: true, tracing: true, maxBuffer }
+    }
+
+    case 'trace_stop': {
+      const hits = session.stopTrace()
+      return { ok: true, tracing: false, hits, count: hits.length }
+    }
+
+    case 'trace_status':
+      return {
+        tracing: session.tracing,
+        count: session.traceBuffer.length,
+        hits: session.traceBuffer,
+      }
+
     case 'quit':
       return { status: 'disconnected' }
 

@@ -97,7 +97,8 @@ async function main(): Promise<void> {
       `mypry - inline debugger for Node.js and the browser\n\n` +
       `Commands:\n` +
       `  mypry attach [options]   Attach to a running process\n` +
-      `  mypry open [URL]         Launch Chrome with debugger port\n\n` +
+      `  mypry open [URL]         Launch Chrome with debugger port\n` +
+      `  mypry inject <PID>       Enable inspector on a running Node.js process\n\n` +
       `Attach options:\n` +
       `  --port PORT        V8 inspector port (default: 9229)\n` +
       `  --host HOST        Inspector host (default: 127.0.0.1)\n` +
@@ -114,7 +115,8 @@ async function main(): Promise<void> {
       `  mypry attach                                # backend REPL\n` +
       `  mypry attach --chrome                       # backend + frontend\n` +
       `  mypry attach --json                         # ndjson for embedders\n` +
-      `  mypry attach --mcp                          # MCP for Claude Code\n`
+      `  mypry attach --mcp                          # MCP for Claude Code\n` +
+      `  mypry inject 12345                           # enable inspector on PID 12345\n`
     )
     return
   }
@@ -174,6 +176,27 @@ async function main(): Promise<void> {
     }
     process.stderr.write('[mypry] ✅ Chrome launched (CDP may take a moment)\n')
     process.exit(0)
+  }
+
+  // ── `mypry inject <PID>` — enable inspector on running process ──
+
+  if (positionals[0] === 'inject') {
+    const pid = parseInt(positionals[1], 10)
+    if (!pid || isNaN(pid)) {
+      process.stderr.write('[mypry] usage: mypry inject <PID>\n')
+      process.exit(1)
+    }
+    process.stderr.write(`[mypry] sending SIGUSR1 to PID ${pid} to enable inspector...\n`)
+    try {
+      process.kill(pid, 'SIGUSR1')
+    } catch (err: any) {
+      process.stderr.write(`[mypry] failed: ${err.message}\n`)
+      process.exit(1)
+    }
+    // Wait a moment for the inspector to start
+    await new Promise(r => setTimeout(r, 500))
+    process.stderr.write(`[mypry] inspector should be active on port ${values.port}\n`)
+    // Fall through to attach
   }
 
   // ── Frontend session (Chrome CDP) — launch first so user can interact ──

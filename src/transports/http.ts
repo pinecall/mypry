@@ -29,7 +29,7 @@ import { snapshot } from '../core/snapshot.js'
 export interface HttpServerOptions {
   port?: number           // default 3099
   host?: string           // default 127.0.0.1
-  token?: string          // optional bearer token for auth
+  token?: string          // single token (rw) or 'tok1:rw,tok2:ro' for multi
   pairChannel?: EventEmitter
 }
 
@@ -44,7 +44,9 @@ export async function startHttpServer(
 ): Promise<HttpServer> {
   const port = opts.port ?? 3099
   const host = opts.host ?? '127.0.0.1'
-  const token = opts.token
+
+  // Parse token config: single token = rw, or 'tok1:rw,tok2:ro'
+  const tokenMap = parseTokens(opts.token)
 
   // Track SSE clients for event streaming
   const sseClients = new Set<http.ServerResponse>()
@@ -74,6 +76,9 @@ export async function startHttpServer(
     sseClients.clear()
   })
 
+  // Wire trace hits to SSE
+  session.onTraceHit = (entry) => pushSSE('trace', entry)
+
   const server = http.createServer(async (req, res) => {
     // CORS — open for localhost dev tooling
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -83,12 +88,18 @@ export async function startHttpServer(
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
 
     // Auth check
-    if (token) {
+    if (tokenMap) {
       const auth = req.headers.authorization
-      if (!auth || auth !== `Bearer ${token}`) {
+      const bearer = auth?.startsWith('Bearer ') ? auth.slice(7) : ''
+      const perm = tokenMap.get(bearer)
+      if (!perm) {
         res.setHeader('Content-Type', 'application/json')
         return respond(res, 401, { error: 'Unauthorized — Bearer token required' })
       }
+      // Store permission for later use
+      ;(req as any)._perm = perm
+    } else {
+      ;(req as any)._perm = 'rw'
     }
 
     res.setHeader('Content-Type', 'application/json')
@@ -116,6 +127,14 @@ export async function startHttpServer(
         }
 
         // SSE — Server-Sent Events stream
+        if (url.pathname === '/traces') {
+          return respond(res, 200, {
+            tracing: session.tracing,
+            count: session.traceBuffer.length,
+            hits: session.traceBuffer,
+          })
+        }
+
         if (url.pathname === '/events') {
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -141,6 +160,9 @@ export async function startHttpServer(
         const body = await readBody(req)
         if (!body.op) {
           return respond(res, 400, { error: 'missing "op" field' })
+        }
+        if ((req as any)._perm === 'ro' && !isReadOnlyOp(body.op)) {
+          return respond(res, 403, { error: `Forbidden — '${body.op}' requires rw token` })
         }
         opts.pairChannel?.emit('agent-action', body)
         const result = await executeOp(session, body.op, body)
@@ -202,4 +224,35 @@ function readBody(req: http.IncomingMessage): Promise<any> {
     })
     req.on('error', reject)
   })
+}
+
+// ── Auth helpers ──
+
+const READ_ONLY_OPS = new Set([
+  'state', 'eval', 'locals', 'backtrace', 'source',
+  'breakpoints', 'trace_status',
+])
+
+function isReadOnlyOp(op: string): boolean {
+  return READ_ONLY_OPS.has(op)
+}
+
+function parseTokens(raw?: string): Map<string, 'rw' | 'ro'> | null {
+  if (!raw) return null
+  const map = new Map<string, 'rw' | 'ro'>()
+
+  // Check if it's multi-token format: "tok1:rw,tok2:ro"
+  if (raw.includes(':')) {
+    for (const part of raw.split(',')) {
+      const [tok, perm] = part.trim().split(':')
+      if (tok && (perm === 'rw' || perm === 'ro')) {
+        map.set(tok, perm)
+      }
+    }
+    if (map.size > 0) return map
+  }
+
+  // Single token = full rw access
+  map.set(raw, 'rw')
+  return map
 }

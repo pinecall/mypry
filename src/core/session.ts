@@ -32,6 +32,12 @@ export class DebuggerSession {
   breakpoints: Map<number, BreakpointEntry>
   _nextBpId: number
 
+  // Trace mode — non-blocking observation
+  tracing: boolean
+  traceBuffer: any[]
+  maxTraceBuffer: number
+  onTraceHit: ((entry: any) => void) | null
+
   constructor(cdp: CDPClient) {
     this.cdp = cdp
     this.scripts = new Map()          // scriptId -> {url, source|null}
@@ -40,6 +46,10 @@ export class DebuggerSession {
     this.onConsole = null             // callback for console output forwarding
     this.breakpoints = new Map()      // id -> {file, line, cdpId}
     this._nextBpId = 0
+    this.tracing = false
+    this.traceBuffer = []
+    this.maxTraceBuffer = 100
+    this.onTraceHit = null
   }
 
   async init(): Promise<void> {
@@ -48,6 +58,13 @@ export class DebuggerSession {
     })
     this.cdp.on('Debugger.paused', (p: unknown) => {
       this.currentPause = p
+
+      // Trace mode: capture snapshot and auto-resume
+      if (this.tracing) {
+        this._captureTraceHit().catch(() => {})
+        return
+      }
+
       const ls = this.pauseListeners.splice(0)
       for (const l of ls) l(p)
     })
@@ -196,5 +213,46 @@ export class DebuggerSession {
       try { await this.cdp.send('Debugger.removeBreakpoint', { breakpointId: bp.cdpId }) } catch {}
     }
     this.breakpoints.clear()
+  }
+
+  // ── Trace mode ──
+
+  async _captureTraceHit(): Promise<void> {
+    const frame = this.topFrame()
+    if (!frame) { await this.resume(); return }
+
+    const scriptId = frame.location.scriptId
+    const s = await this.getSource(scriptId)
+    const line = frame.location.lineNumber + 1
+
+    const entry = {
+      timestamp: Date.now(),
+      file: (s?.url || '').replace(/^file:\/\//, ''),
+      line,
+      function: frame.functionName || '<anon>',
+      locals: await this.getLocals(),
+    }
+
+    if (this.traceBuffer.length < this.maxTraceBuffer) {
+      this.traceBuffer.push(entry)
+    }
+    if (this.onTraceHit) this.onTraceHit(entry)
+
+    // Auto-resume — don't block execution
+    this.currentPause = null
+    await this.cdp.send('Debugger.resume')
+  }
+
+  startTrace(maxBuffer?: number): void {
+    this.tracing = true
+    this.traceBuffer = []
+    if (maxBuffer) this.maxTraceBuffer = maxBuffer
+  }
+
+  stopTrace(): any[] {
+    this.tracing = false
+    const buffer = this.traceBuffer
+    this.traceBuffer = []
+    return buffer
   }
 }
