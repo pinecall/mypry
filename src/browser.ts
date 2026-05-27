@@ -1,9 +1,9 @@
 /**
  * Browser-side inline trigger.
  *
- * For frontend code. If a debugger is attached (DevTools, Chrome with
- * --remote-debugging-port, or mypry-attached Chrome), execution pauses.
- * Otherwise this is a no-op.
+ * Drops a `debugger` statement. When Chrome is launched with
+ * --remote-debugging-port, mypry can attach via CDP and provide
+ * the full debugging experience (source, step, eval, locals).
  *
  * Usage:
  *   import { pry } from 'mypry/browser'

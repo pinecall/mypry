@@ -25,25 +25,25 @@ export interface PryOptions {
 export function pry(opts: PryOptions = {}): void {
   const { port = 9229, host = '0.0.0.0', message } = opts
 
-  // Always close + re-open so we block waiting for a fresh client every time
+  if (message) process.stderr.write(`[mypry] ${message}\n`)
+
+  // If inspector is already open (client still attached), just pause — don't reconnect.
   if (inspector.url()) {
-    try { inspector.close() } catch {}
+    debugger
+    return
   }
 
+  // No inspector open — open one and wait for a client to connect.
   process.stderr.write(
     `[mypry] inspector listening on ${host}:${port}\n` +
     `[mypry] waiting for client...\n`
   )
-  // 3rd arg = wait for client to connect before returning.
   inspector.open(port, host, true)
   process.stderr.write('[mypry] client connected\n')
-
-  if (message) process.stderr.write(`[mypry] ${message}\n`)
 
   // V8 honors `debugger` only while a client is attached → pause now.
   // eslint-disable-next-line no-debugger
   debugger
-  // NOTE: inspector stays open after continue — next pry() call will close + reopen it
 }
 
 export default pry

@@ -52,13 +52,12 @@ function App() {
       const res = await fetch(`${API}/api/users${params}`)
       const data = await res.json()
 
-      // 🔮 FRONTEND PRY — pauses in Chrome DevTools
-      // Open DevTools (F12) to step through this
-      pry({ message: `fetchUsers response: ${data.count} users` })
+      // 🔮 FRONTEND PRY — sends state to mypry via Express
+      pry({ message: `fetchUsers: ${data.count} users` })
 
       setUsers(data.users)
       addLog(`✅ Got ${data.count} users`, 'success')
-      addLog('🔮 Frontend paused at pry() — check Chrome DevTools', 'paused-frontend')
+      addLog('🔮 Frontend pry() sent to mypry', 'paused-frontend')
     } catch (e: any) {
       addLog(`❌ ${e.message}`, 'error')
     }
@@ -76,12 +75,12 @@ function App() {
       const res = await fetch(`${API}/api/users/${id}`)
       const user = await res.json()
 
-      // 🔮 FRONTEND PRY — inspect the user object in DevTools
+      // 🔮 FRONTEND PRY — sends user data to mypry
       pry({ message: `fetchUser #${id}: ${user.name}` })
 
       setSelectedUser(user)
       addLog(`✅ Got user: ${user.name}`, 'success')
-      addLog('🔮 Frontend paused at pry()', 'paused-frontend')
+      addLog('🔮 Frontend pry() sent to mypry', 'paused-frontend')
     } catch (e: any) {
       addLog(`❌ ${e.message}`, 'error')
     }
@@ -104,12 +103,12 @@ function App() {
       })
       const order = await res.json()
 
-      // 🔮 FRONTEND PRY — inspect the created order before rendering
-      pry({ message: `createOrder #${order.id} — $${order.total}` })
+      // 🔮 FRONTEND PRY — sends order data to mypry
+      pry({ message: `createOrder #${order.id}` })
 
       setOrders(prev => [order, ...prev])
       addLog(`✅ Order #${order.id} — $${order.total.toFixed(2)}`, 'success')
-      addLog('🔮 Frontend paused at pry()', 'paused-frontend')
+      addLog('🔮 Frontend pry() sent to mypry', 'paused-frontend')
     } catch (e: any) {
       addLog(`❌ ${e.message}`, 'error')
     }
@@ -145,8 +144,7 @@ function App() {
         <div className="header-text">
           <h1>mypry <span className="accent">fullstack</span> demo</h1>
           <p className="subtitle">
-            Backend <code>pry()</code> pauses in <strong>mypry CLI</strong> &nbsp;·&nbsp;
-            Frontend <code>pry()</code> pauses in <strong>Chrome DevTools</strong>
+            Backend + Frontend <code>pry()</code> — both pause in <strong>mypry CLI</strong>
           </p>
         </div>
       </header>
@@ -265,14 +263,14 @@ function App() {
               <div className="step-num">3</div>
               <div>
                 <code>cd examples/fullstack/client && npm run dev</code>
-                <p>React app with <code>pry()</code> in fetch callbacks</p>
+                <p>React app — frontend <code>pry()</code> sends state to mypry too</p>
               </div>
             </div>
             <div className="step frontend">
               <div className="step-num">4</div>
               <div>
-                <code>F12 → Sources tab</code>
-                <p>Chrome DevTools pauses at frontend <code>pry()</code></p>
+                <code>browserState</code>
+                <p>In mypry REPL, inspect frontend data sent by browser pry()</p>
               </div>
             </div>
           </div>

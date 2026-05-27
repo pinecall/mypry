@@ -1,10 +1,10 @@
-# 🔮 mypry
+# mypry
 
-**Node + browser debugger with inline `pry()` trigger — pairs with your AI agent.**
+Inline debugger for Node.js and the browser. Drop `pry()` anywhere — execution pauses and waits for you.
 
-Drop `pry()` anywhere in your code. Execution freezes. Attach with a human REPL, pipe ndjson for agent orchestration, speak MCP to Claude Code, or curl the HTTP API.
+Built for **AI pair programming**: your agent attaches via MCP or JSON, inspects variables, steps through code, and continues — programmatically.
 
-```bash
+```
 npm install mypry
 ```
 
@@ -15,185 +15,224 @@ npm install mypry
 ```js
 const pry = require('mypry')
 
-async function processOrder(order) {
-  const total = calculateTotal(order)
-  pry() // 🔮 execution stops here
-  await chargeCustomer(order.userId, total)
+function handleRequest(req) {
+  const users = db.getUsers()
+  pry()  // ← execution pauses here, waiting for a client
+  return users
 }
 ```
 
-### 2. Attach
+### 2. Attach the debugger
 
 ```bash
-# Human REPL (default)
+# Run your app — it blocks at pry()
+node server.js
+
+# In another terminal:
 mypry attach
-
-# AI agent (ndjson over stdio)
-mypry attach --json
-
-# MCP server (Claude Code / Cursor)
-mypry attach --mcp
-
-# HTTP API (curl / embedders)
-mypry attach --http-only
 ```
 
-### 3. Debug
-
 ```
-─── /src/orders.ts:12  processOrder ───
-    10 │ async function processOrder(order) {
-    11 │   const total = calculateTotal(order)
-►   12 │   pry()
-    13 │   await chargeCustomer(order.userId, total)
-    14 │ }
+─── server.js:5  handleRequest ───
+  3 │ function handleRequest(req) {
+  4 │   const users = db.getUsers()
+  5 │   pry()
+► 6 │   return users
+  7 │ }
 
-(mypry) order
-=> {"id": "ord_123", "items": [{"sku": "A1", "qty": 2}]}
-
-(mypry) total
-=> 49.99
-
-(mypry) next
-►   13 │   await chargeCustomer(order.userId, total)
+(mypry) users
+=> [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+(mypry) continue
 ```
 
-## Transports
+That's it. `pry()` opens the V8 inspector and blocks. `mypry attach` connects via CDP and drops you into a REPL at the exact line where `pry()` was called.
 
-| Flag | Protocol | Use case |
-|------|----------|----------|
-| *(none)* | Readline REPL | Human developer debugging |
-| `--json` | ndjson over stdio | Agent orchestration (Aurora, custom) |
-| `--mcp` | MCP over stdio | Claude Code, Cursor, Windsurf |
-| `--http[=PORT]` | REST over HTTP | curl, browser devtools, embedders |
-| `--http-only` | REST over HTTP | Headless daemon (no stdio) |
-
-`--http` is a **side transport** — combine it with any stdio mode:
-
-```bash
-# REPL + HTTP (pair programming: you debug, agent queries via HTTP)
-mypry attach --http
-
-# Agent ndjson + HTTP dashboard
-mypry attach --json --http=4000
-```
-
-## API
-
-### Inline Trigger
+## pry() Options
 
 ```js
-// CommonJS
-const pry = require('mypry')
-pry()
-pry({ port: 9230 })
-pry({ message: 'after auth' })
-
-// ESM
-import { pry } from 'mypry'
-pry()
-
-// Browser
-import { pry } from 'mypry/browser'
-pry({ message: 'before render' })
+pry()                                    // default port 9229
+pry({ port: 9235 })                      // custom port
+pry({ message: 'before DB query' })      // log a label when it pauses
+pry({ port: 9235, host: '127.0.0.1' })  // custom host + port
 ```
 
-### REPL Commands
-
-| Command | Action |
-|---------|--------|
-| `n`, `next` | Step over |
-| `s`, `step` | Step into |
-| `o`, `out` | Step out |
-| `c`, `continue` | Resume |
-| `l`, `list` | Source context |
-| `bt`, `where` | Call stack |
-| `locals` | Local variables |
-| `break file:line` | Set breakpoint |
-| `breakpoints` | List breakpoints |
-| `delete N` | Remove breakpoint |
-| `pause` | Force-pause running code |
-| `<expr>` | Eval in frame |
-| `q`, `quit` | Disconnect |
-
-### ndjson Protocol
-
-Send JSON commands over stdin, receive JSON responses on stdout:
+If you use a custom port, pass `--port` to the CLI:
 
 ```bash
-echo '{"op":"state"}' | node mypry.js attach --json --port 9229
+mypry attach --port 9235
 ```
 
-**Operations:** `state`, `eval`, `step_over`, `step_into`, `step_out`, `continue`, `locals`, `backtrace`, `source`, `set_breakpoint`, `remove_breakpoint`, `breakpoints`, `pause`, `quit`
+## REPL Commands
 
-### MCP Tools
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `continue` | `c` | Resume execution |
+| `next` | `n` | Step over |
+| `step` | `s` | Step into |
+| `out` | `o` | Step out |
+| `list` | `l` | Show source context (wider) |
+| `locals` | — | Show all local variables |
+| `backtrace` | `bt`, `where` | Show call stack |
+| `break file:line` | `b` | Set a breakpoint |
+| `breakpoints` | `bl` | List breakpoints |
+| `delete N` | `del` | Remove breakpoint |
+| `pause` | — | Pause a running target |
+| `quit` | `q` | Disconnect |
+| *anything else* | — | Evaluate in current frame |
 
-10 tools designed for AI agents:
+## Frontend Debugging
+
+### 1. Add `pry()` in your React / Vue / Svelte code
+
+```tsx
+import { pry } from 'mypry/browser'
+
+function UserList() {
+  const [users, setUsers] = useState([])
+
+  const loadUsers = async () => {
+    const data = await fetch('/api/users').then(r => r.json())
+    pry({ message: `loaded ${data.length} users` })
+    setUsers(data)
+  }
+
+  return <button onClick={loadUsers}>Load</button>
+}
+```
+
+### 2. Add `--chrome`
+
+```bash
+mypry attach --chrome                        # auto-detect dev server
+mypry attach --chrome http://localhost:5178  # explicit URL
+```
+
+Without a URL, mypry scans common dev ports (3000, 5173–5180, 8080, 4200) and opens the first one it finds. If you have multiple servers running, pass the URL explicitly.
+
+When a frontend `pry()` fires, the REPL shows your component code:
+
+```
+━━━ FRONTEND ━━━
+─── App.tsx:55  loadUsers ───
+  53 │     const data = await res.json()
+  54 │     pry({ message: `loaded ${data.count} users` })
+► 55 │     setUsers(data.users)
+
+(mypry|frontend) data
+=> {"users": [...], "count": 3}
+(mypry|frontend) continue
+```
+
+### Fullstack (backend + frontend in one REPL)
+
+If your backend also uses `pry()`, both pause in the same session:
+
+```bash
+mypry attach --port 9235 --chrome
+```
+
+Click a button → backend pauses → inspect → `continue` → frontend pauses → inspect → `continue`. The REPL labels each pause:
+
+```
+━━━ BACKEND ━━━
+─── server.js:12  <anon> ───
+► 12 │   res.json({ users: result })
+
+(mypry|backend) continue
+
+━━━ FRONTEND ━━━
+─── App.tsx:55  loadUsers ───
+► 55 │     setUsers(data.users)
+
+(mypry|frontend) continue
+```
+
+## AI Agent Modes
+
+### JSON (ndjson stdio)
+
+```bash
+mypry attach --json
+```
+
+Newline-delimited JSON on stdin/stdout. For embedding in AI tools.
+
+```json
+→ {"action":"eval","expression":"users.length"}
+← {"ok":true,"value":3}
+
+→ {"action":"continue"}
+← {"ok":true,"running":true}
+```
+
+### MCP (Model Context Protocol)
+
+```bash
+mypry attach --mcp
+```
+
+MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
 
 | Tool | Description |
 |------|-------------|
-| `debugger_state` | Current status, file, line, locals |
-| `debugger_step` | Step over/into/out |
-| `debugger_continue` | Resume to next breakpoint |
-| `debugger_eval` | Evaluate expression in frame |
-| `debugger_set_breakpoint` | Set breakpoint (with optional condition) |
-| `debugger_list_breakpoints` | List active breakpoints |
-| `debugger_remove_breakpoint` | Remove by ID |
-| `debugger_pause` | Force-pause running code |
-| `debugger_backtrace` | Call stack |
-| `debugger_source` | Full source of current file |
+| `get_state` | Current pause location, source, and locals |
+| `eval` | Evaluate expression in current frame |
+| `step_over` / `step_into` / `step_out` | Stepping |
+| `continue` | Resume |
+| `set_breakpoint` / `remove_breakpoint` | Breakpoint management |
+| `get_snapshot` | Full state snapshot |
 
-### HTTP API
+## CLI Reference
 
-```bash
-# Get state
-curl localhost:3099/state
+```
+mypry attach [options]
 
-# Evaluate expression
-curl -X POST localhost:3099/command -d '{"op":"eval","expr":"x + 1"}'
+Connection:
+  --port PORT        V8 inspector port (default: 9229)
+  --host HOST        Inspector host (default: 127.0.0.1)
+  --url WS_URL       Direct WebSocket URL
 
-# Step over
-curl -X POST localhost:3099/command -d '{"op":"step_over"}'
+Transport:
+  (default)          Human REPL
+  --json             ndjson stdio
+  --mcp              MCP server on stdio
 
-# Health check
-curl localhost:3099/health
+Frontend:
+  --chrome           Auto-detect dev server, launch Chrome with CDP
+
+  -h, --help         Show help
 ```
 
-## Browser Debugging
+## Architecture
 
-Attach to Chrome tabs via `--remote-debugging-port`:
-
-```bash
-# Launch Chrome with debugging
-google-chrome --remote-debugging-port=9222
-
-# Attach to a tab by title
-mypry attach --port 9222 --tab "My App"
-
-# Or by URL
-mypry attach --port 9222 --tab-url "localhost:3000"
+```
+Your Code                    mypry CLI
+─────────                    ─────────
+                             ┌──────────────────┐
+  pry()  ─── V8 Inspector ──→│  DebuggerSession  │
+  (Node)     (CDP)           │                    │
+                             │  ┌──── REPL        │
+  pry()  ─── Chrome CDP ────→│  ├──── JSON        │
+  (Browser)                  │  └──── MCP         │
+                             └──────────────────┘
 ```
 
-## Programmatic Use
-
-```ts
-import { CDPClient, DebuggerSession, snapshot } from 'mypry/core'
-import { startHttpServer } from 'mypry/http'
-import { startMcpServer } from 'mypry/mcp'
-
-const cdp = new CDPClient('ws://127.0.0.1:9229/...')
-await cdp.connect()
-const session = new DebuggerSession(cdp)
-await session.init()
-
-// Use any transport
-await startHttpServer(session, { port: 4000 })
-await startMcpServer(session)
-```
+| Module | Purpose |
+|--------|---------|
+| `src/pry.ts` | Node.js `pry()` — opens inspector, fires `debugger` |
+| `src/browser.ts` | Browser `pry()` — fires `debugger` for Chrome CDP |
+| `src/core/session.ts` | Debugger session — pause, step, eval, breakpoints |
+| `src/core/cdp-client.ts` | Raw WebSocket CDP client |
+| `src/core/targets.ts` | Target discovery |
+| `src/transports/repl.ts` | Human REPL |
+| `src/transports/ndjson.ts` | JSON stdio transport |
+| `src/transports/mcp.ts` | MCP server transport |
+| `src/cli.ts` | CLI entry point |
 
 ## Requirements
 
-- Node.js ≥ 22.0.0
+- Node.js ≥ 22
+- Chrome (for `--chrome`)
 
 ## License
 

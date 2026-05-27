@@ -2,7 +2,7 @@
  * Express API server with mypry inline triggers.
  *
  * Run:    node examples/fullstack/server/index.js
- * Attach: mypry attach --port 9229
+ * Attach: mypry attach --port 9235
  *
  * Hit endpoints and watch the debugger pause on each pry():
  *   curl http://localhost:3456/api/users
@@ -43,7 +43,7 @@ app.get('/api/users', (req, res) => {
   }
 
   // 🔮 Inspect the filtered results before responding
-  pry({ message: 'GET /api/users — inspect result, search' })
+  pry({ port: 9235, message: 'GET /api/users — inspect result, search' })
 
   res.json({ users: result, count: result.length })
 })
@@ -53,7 +53,7 @@ app.get('/api/users/:id', (req, res) => {
   const user = users.find(u => u.id === id)
 
   // 🔮 Inspect whether user was found
-  pry({ message: `GET /api/users/${id} — inspect user` })
+  pry({ port: 9235, message: `GET /api/users/${id} — inspect user` })
 
   if (!user) return res.status(404).json({ error: 'user not found' })
   res.json(user)
@@ -77,7 +77,7 @@ app.post('/api/orders', (req, res) => {
   orders.push(order)
 
   // 🔮 Inspect the order before responding
-  pry({ message: `POST /api/orders — inspect order, user, items` })
+  pry({ port: 9235, message: `POST /api/orders — inspect order, user, items` })
 
   res.status(201).json(order)
 })
@@ -88,6 +88,21 @@ app.get('/api/orders', (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), users: users.length, orders: orders.length })
+})
+
+// ── Browser pry() proxy ───
+// The frontend pry() POSTs here with its state.
+// This handler calls the real pry() which blocks the server until mypry continues.
+// The agent sees the frontend data as local variables.
+
+app.post('/__pry__', (req, res) => {
+  const { message, data, source } = req.body
+  const browserState = data    // 🔮 agent can inspect this
+  const browserSource = source // 🔮 where pry() was called in the frontend
+
+  pry({ port: 9235, message: `[browser] ${message || 'frontend pry()'}` })
+
+  res.json({ ok: true })
 })
 
 const PORT = 3456
@@ -104,8 +119,8 @@ app.listen(PORT, () => {
   console.log(`    GET  /api/health         → health check`)
   console.log()
   console.log('  Attach debugger:')
-  console.log(`    mypry attach             → human REPL`)
-  console.log(`    mypry attach --json      → agent mode`)
-  console.log(`    mypry attach --mcp       → MCP for Claude Code`)
+  console.log(`    mypry attach --port 9235             → human REPL`)
+  console.log(`    mypry attach --port 9235 --json      → agent mode`)
+  console.log(`    mypry attach --port 9235 --mcp       → MCP for Claude Code`)
   console.log()
 })

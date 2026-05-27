@@ -113,8 +113,9 @@ export class DebuggerSession {
     while (this.currentPause) {
       const top = this.currentPause.callFrames?.[0]
       if (!top) break
-      const url = this.scripts.get(top.location.scriptId)?.url || ''
-      if (!url.endsWith('/pry.js') && !url.endsWith('/pry.cjs')) break
+      const rawUrl = this.scripts.get(top.location.scriptId)?.url || ''
+      const url = rawUrl.split('?')[0]  // strip Vite ?t=... cache busters
+      if (!url.endsWith('/pry.js') && !url.endsWith('/pry.cjs') && !url.endsWith('/browser.js')) break
       this.currentPause = null
       await this.cdp.send('Debugger.stepOut')
       await this._waitRawPause()
