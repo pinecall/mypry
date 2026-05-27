@@ -148,47 +148,59 @@ curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"continue"}
 
 5. **Source maps work** — breakpoints set on `.ts` files resolve to the correct compiled JS lines.
 
----
+## Architecture
 
-## Configuration
+```
+Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CDP) → Node.js
+```
 
-### Antigravity MCP (mcp_config.json)
+- **MCP Bridge** (`mcp-bridge.js`): stateless proxy, starts instantly, never blocks
+- **mypry daemon** (`mypry attach --http-only`): connects to V8 inspector, manages CDP, auto-reconnects
+
+### Setup
+
+**1. Start the daemon** (before using MCP tools):
+
+```bash
+mypry attach --http-only --port 9229 --http=3098 --workers
+```
+
+> Aurora's TUI starts its own debugger on :3099. For standalone debugging, use :3098.
+
+**2. MCP bridge** is auto-started by Antigravity via `mcp_config.json`:
 
 ```json
 {
   "mypry": {
     "command": "/Users/berna/.nvm/versions/node/v24.14.0/bin/node",
-    "args": [
-      "/Users/berna/mypry/dist/cli.js",
-      "attach",
-      "--mcp",
-      "--workers"
-    ]
+    "args": ["/Users/berna/mypry/dist/mcp-bridge.js"]
   }
 }
 ```
 
+The bridge proxies tool calls to `http://127.0.0.1:3098`. If the daemon isn't running, tools return a clean error.
+
 ### Claude Code (~/.claude/mcp.json)
+
+Same bridge architecture:
 
 ```json
 {
   "mcpServers": {
     "mypry": {
-      "command": "mypry",
-      "args": ["attach", "--mcp", "--workers"]
+      "command": "node",
+      "args": ["/Users/berna/mypry/dist/mcp-bridge.js"]
     }
   }
 }
 ```
 
-### Codex
-
-Codex doesn't support MCP yet. Use the HTTP API:
+### Codex (HTTP only)
 
 ```bash
-# Start mypry HTTP alongside your process
+# Start daemon, then use curl
 mypry attach --http-only --http=3098 --workers
-# Then use curl commands in Codex
+curl http://localhost:3098/state
 ```
 
 ---
@@ -196,5 +208,5 @@ mypry attach --http-only --http=3098 --workers
 ## Prerequisites
 
 - Target process running with `--inspect` (Aurora backend does this automatically)
+- mypry daemon running: `mypry attach --http-only --http=3098 --workers`
 - mypry installed: `npm link` from `~/mypry`
-- For MCP: mypry MCP server configured in agent's MCP config
