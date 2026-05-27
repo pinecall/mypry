@@ -221,82 +221,130 @@ if (performance.now() - _t < 50) {
 
 If Chrome was launched without `--remote-debugging-port`, the `debugger` statement is a no-op (takes <1ms). The timing check detects this and logs a warning.
 
-## Programmatic API (HTTP)
+## HTTP API
 
-### Start the HTTP server
+Start with any transport or standalone:
 
 ```bash
 mypry attach --http              # alongside REPL
 mypry attach --http-only         # standalone API (no REPL)
 mypry attach --http=4000         # custom port (default: 3099)
+mypry attach --http --token s3cr3t  # with bearer auth
 ```
 
 ### Endpoints
 
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | `{ok, connected, status}` |
+| GET | `/state` | Full paused state snapshot |
+| GET | `/backtrace` | Call stack frames |
+| GET | `/breakpoints` | Active breakpoints |
+| GET | `/events` | **SSE stream** — real-time events (no polling) |
+| POST | `/command` | Single op: `{op, ...params}` |
+| POST | `/batch` | Multiple ops: `{ops: [{op, ...}, ...]}` → `{results: [...]}` |
+
+### Endpoint Examples
+
 #### `GET /health`
 
-```bash
-curl localhost:3099/health
-```
 ```json
 {"ok": true, "connected": true, "status": "paused"}
 ```
 
 #### `GET /state`
 
-```bash
-curl localhost:3099/state
-```
 ```json
 {
   "status": "paused",
   "file": "auth.service.ts",
   "line": 152,
   "function": "validateUser",
-  "locals": {"emailAddress": "alice@example.com", "user": {...}}
-}
-```
-
-#### `GET /backtrace`
-
-```json
-{
-  "frames": [
-    {"function": "validateUser", "file": "auth.service.ts", "line": 152},
-    {"function": "login", "file": "auth.controller.ts", "line": 34}
-  ]
+  "source_window": [
+    {"line": 150, "text": "  const user = await this.usersService.findOne(email)", "current": false},
+    {"line": 151, "text": "  const isMatch = await bcrypt.compare(pass, user.password)", "current": false},
+    {"line": 152, "text": "  debugger", "current": true},
+    {"line": 153, "text": "  return user", "current": false}
+  ],
+  "locals": {"emailAddress": "alice@test.com", "isMatch": true, "user": "User"}
 }
 ```
 
 #### `POST /command`
 
-Universal endpoint for all debugger operations:
-
 ```bash
 # Evaluate
 curl -X POST localhost:3099/command -d '{"op":"eval","expr":"users.length"}'
-# => {"ok":true,"value":3}
+# → {"ok":true,"type":"number","value":3}
 
-# Continue
+# Continue (returns immediately — non-blocking)
 curl -X POST localhost:3099/command -d '{"op":"continue"}'
+# → {"status":"running"}
 
 # Step over / into / out
 curl -X POST localhost:3099/command -d '{"op":"step_over"}'
 curl -X POST localhost:3099/command -d '{"op":"step_into"}'
 curl -X POST localhost:3099/command -d '{"op":"step_out"}'
 
-# Locals
+# Locals / Backtrace
 curl -X POST localhost:3099/command -d '{"op":"locals"}'
+curl -X POST localhost:3099/command -d '{"op":"backtrace"}'
 
 # Breakpoints
-curl -X POST localhost:3099/command \
-  -d '{"op":"set_breakpoint","file":"auth.service.ts","line":88}'
+curl -X POST localhost:3099/command -d '{"op":"set_breakpoint","file":"auth.service.ts","line":88}'
 curl -X POST localhost:3099/command -d '{"op":"remove_breakpoint","id":"1"}'
 curl -X POST localhost:3099/command -d '{"op":"breakpoints"}'
+```
 
-# Pause / State
-curl -X POST localhost:3099/command -d '{"op":"pause"}'
-curl -X POST localhost:3099/command -d '{"op":"state"}'
+#### `POST /batch` — Multiple ops in one call
+
+```bash
+curl -X POST localhost:3099/batch -d '{
+  "ops": [
+    {"op": "eval", "expr": "user.email"},
+    {"op": "eval", "expr": "user.role"},
+    {"op": "eval", "expr": "request.body"},
+    {"op": "locals"},
+    {"op": "continue"}
+  ]
+}'
+# → {"results": [
+#     {"ok":true,"value":"alice@test.com"},
+#     {"ok":true,"value":"admin"},
+#     {"ok":true,"value":{"action":"login"}},
+#     {"locals":{"email":"alice@test.com","isMatch":true}},
+#     {"status":"running"}
+#   ]}
+```
+
+#### `GET /events` — SSE (Server-Sent Events)
+
+Real-time stream. No polling. On connect, sends current state immediately:
+
+```bash
+curl -N localhost:3099/events
+# event: paused
+# data: {"status":"paused","file":"auth.service.ts","line":136,...}
+#
+# event: resumed
+# data: {"status":"running"}
+#
+# event: disconnected
+# data: {"status":"disconnected"}
+```
+
+### Authentication
+
+When `--token` is set, all requests require `Authorization: Bearer <token>`:
+
+```bash
+# No token → 401
+curl localhost:3099/health
+# → {"error":"Unauthorized — Bearer token required"}
+
+# With token → 200
+curl -H "Authorization: Bearer s3cr3t" localhost:3099/health
+# → {"ok":true,"connected":true,"status":"paused"}
 ```
 
 ### Operations Reference
@@ -322,26 +370,31 @@ curl -X POST localhost:3099/command -d '{"op":"state"}'
 
 ```typescript
 const BASE = 'http://localhost:3099'
+const headers = { 'Authorization': 'Bearer s3cr3t' }
 
-// 1. Check if paused
-const health = await fetch(`${BASE}/health`).then(r => r.json())
-if (health.status !== 'paused') return
+// Option A: Poll health
+const health = await fetch(`${BASE}/health`, { headers }).then(r => r.json())
 
-// 2. Inspect
-const state = await fetch(`${BASE}/state`).then(r => r.json())
-console.log(`Paused at ${state.file}:${state.line}`)
-
-// 3. Evaluate
-const result = await fetch(`${BASE}/command`, {
-  method: 'POST',
-  body: JSON.stringify({ op: 'eval', expr: 'user.emailAddress' }),
-}).then(r => r.json())
-
-// 4. Continue
-await fetch(`${BASE}/command`, {
-  method: 'POST',
-  body: JSON.stringify({ op: 'continue' }),
+// Option B: SSE (no polling)
+const events = new EventSource(`${BASE}/events`)
+events.addEventListener('paused', (e) => {
+  const state = JSON.parse(e.data)
+  console.log(`Paused at ${state.file}:${state.line}`)
 })
+
+// Option C: Batch — eval + continue in one call
+const { results } = await fetch(`${BASE}/batch`, {
+  method: 'POST',
+  headers: { ...headers, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    ops: [
+      { op: 'eval', expr: 'user.emailAddress' },
+      { op: 'eval', expr: 'request.body' },
+      { op: 'locals' },
+      { op: 'continue' },
+    ]
+  }),
+}).then(r => r.json())
 ```
 
 ## Programmatic API (Core Exports)
@@ -543,79 +596,6 @@ MCP server on stdio — plug into Claude Code, Cursor, or any MCP client.
 | `debugger_backtrace` | Call stack frames |
 | `debugger_source` | Full source of current file |
 
-### HTTP API
-
-```bash
-mypry attach --http              # alongside REPL
-mypry attach --http-only         # standalone API (no REPL)
-mypry attach --http=4000         # custom port (default: 3099)
-mypry attach --http --token s3cr3t  # with bearer auth
-```
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | `{ok, connected, status}` |
-| GET | `/state` | Full paused state snapshot |
-| GET | `/backtrace` | Call stack frames |
-| GET | `/breakpoints` | Active breakpoints |
-| GET | `/events` | **SSE stream** — real-time `paused`/`resumed`/`disconnected` events |
-| POST | `/command` | Any op: `{op, ...params}` |
-| POST | `/batch` | Multiple ops: `{ops: [{op, ...}, ...]}` → `{results: [...]}` |
-
-#### SSE Events (no polling)
-
-Subscribe to `GET /events` for real-time debugger events. No polling needed:
-
-```bash
-curl -N http://localhost:3099/events
-# event: paused
-# data: {"status":"paused","file":"auth.service.ts","line":136,...}
-#
-# event: resumed
-# data: {"status":"running"}
-#
-# event: disconnected
-# data: {"status":"disconnected"}
-```
-
-On connect, the server immediately sends the current state as the first event.
-
-#### Batch Operations
-
-Evaluate multiple expressions and continue in a single HTTP call:
-
-```bash
-curl -X POST http://localhost:3099/batch -d '{
-  "ops": [
-    {"op": "eval", "expr": "user.email"},
-    {"op": "eval", "expr": "user.role"},
-    {"op": "eval", "expr": "request.body"},
-    {"op": "continue"}
-  ]
-}'
-# → {"results": [
-#     {"ok":true,"value":"alice@test.com"},
-#     {"ok":true,"value":"admin"},
-#     {"ok":true,"value":{"action":"login"}},
-#     {"status":"running"}
-#   ]}
-```
-
-#### Authentication
-
-When `--token` is set, all requests require `Authorization: Bearer <token>`:
-
-```bash
-# Server
-mypry attach --http-only --token my-secret
-
-# Client
-curl -H "Authorization: Bearer my-secret" http://localhost:3099/health
-# → {"ok":true,...}
-
-curl http://localhost:3099/health  # no token
-# → {"error":"Unauthorized — Bearer token required"}
-```
 
 ## CLI Reference
 
