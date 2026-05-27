@@ -221,6 +221,90 @@ if (performance.now() - _t < 50) {
 
 If Chrome was launched without `--remote-debugging-port`, the `debugger` statement is a no-op (takes <1ms). The timing check detects this and logs a warning.
 
+## Conditional Breakpoints
+
+Set breakpoints that only pause when a condition is true:
+
+```bash
+curl -X POST localhost:3099/command -d '{
+  "op": "set_breakpoint",
+  "file": "auth.service.ts",
+  "line": 136,
+  "condition": "emailAddress === \"admin@test.com\""
+}'
+# Only pauses when emailAddress is admin — other logins continue uninterrupted
+```
+
+In the REPL:
+```
+(mypry) break auth.service.ts:136 emailAddress === "admin@test.com"
+```
+
+## Trace Mode (Non-Blocking Observation)
+
+Observe breakpoint hits without interrupting execution. The app keeps running while mypry silently collects snapshots.
+
+```bash
+# 1. Set breakpoints on the code you want to observe
+curl -X POST localhost:3099/command -d '{"op":"set_breakpoint","file":"auth.service.ts","line":136}'
+
+# 2. Start tracing
+curl -X POST localhost:3099/command -d '{"op":"trace_start","maxBuffer":100}'
+
+# 3. Let the app run normally... users keep logging in...
+
+# 4. Stop and collect results
+curl -X POST localhost:3099/command -d '{"op":"trace_stop"}'
+# → {"ok":true, "count":5, "hits":[
+#     {"timestamp":1779905774582, "file":"auth.service.ts", "line":136,
+#      "function":"validateUser", "locals":{"emailAddress":"alice@test.com","isMatch":true}},
+#     {"timestamp":1779905774588, "file":"auth.service.ts", "line":136,
+#      "function":"validateUser", "locals":{"emailAddress":"bob@test.com","isMatch":false}},
+#     ...
+#   ]}
+```
+
+SSE clients receive `trace` events in real-time during tracing:
+```
+event: trace
+data: {"timestamp":1779905774582,"file":"auth.service.ts","line":136,...}
+```
+
+## Worker Threads
+
+Debug `worker_threads` alongside the main thread:
+
+```bash
+mypry attach --workers --http-only   # discover and attach to all workers
+```
+
+```bash
+# List workers
+curl localhost:3099/workers
+# → {"workers":[{"sessionId":"1","title":"[worker 1] WorkerThread"}], "count":1}
+
+# Command a specific worker
+curl -X POST localhost:3099/command -d '{"op":"state","worker":"1"}'
+curl -X POST localhost:3099/command -d '{"op":"eval","expr":"workerData","worker":"1"}'
+curl -X POST localhost:3099/command -d '{"op":"continue","worker":"1"}'
+```
+
+Workers use the `NodeWorker` CDP domain — they don't get separate ports. mypry creates a `WorkerCDPProxy` that routes commands through the parent session transparently.
+
+## Inject PID
+
+Attach to a running Node.js process that wasn't started with `--inspect`:
+
+```bash
+# Your app is running without --inspect
+node server.js  # PID 12345
+
+# Enable inspector via SIGUSR1 and attach
+mypry inject 12345
+```
+
+This sends `SIGUSR1` to the process, which enables the V8 inspector on port 9229. Then mypry auto-attaches.
+
 ## HTTP API
 
 Start with any transport or standalone:
@@ -240,8 +324,10 @@ mypry attach --http --token s3cr3t  # with bearer auth
 | GET | `/state` | Full paused state snapshot |
 | GET | `/backtrace` | Call stack frames |
 | GET | `/breakpoints` | Active breakpoints |
+| GET | `/workers` | List worker thread sessions |
+| GET | `/traces` | Current trace buffer |
 | GET | `/events` | **SSE stream** — real-time events (no polling) |
-| POST | `/command` | Single op: `{op, ...params}` |
+| POST | `/command` | Single op: `{op, ...params}` (optional `worker` field to target worker) |
 | POST | `/batch` | Multiple ops: `{ops: [{op, ...}, ...]}` → `{results: [...]}` |
 
 ### Endpoint Examples
@@ -360,10 +446,13 @@ curl -H "Authorization: Bearer s3cr3t" localhost:3099/health
 | `locals` | — | All local variables |
 | `backtrace` | — | Call stack frames |
 | `source` | — | Current file source + line |
-| `set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint |
+| `set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint (with optional condition expression) |
 | `remove_breakpoint` | `id` | Remove by ID |
 | `breakpoints` | — | List active breakpoints |
 | `pause` | — | Force pause on running target |
+| `trace_start` | `maxBuffer?` | Start trace mode — auto-resume and collect snapshots |
+| `trace_stop` | — | Stop trace, return all collected hits |
+| `trace_status` | — | Current trace buffer without stopping |
 | `quit` | — | Disconnect |
 
 ### Agent Integration Example
@@ -605,6 +694,7 @@ mypry - inline debugger for Node.js and the browser
 Commands:
   mypry attach [options]   Attach to a running process
   mypry open [URL]         Launch Chrome with debugger port
+  mypry inject <PID>       Enable inspector on running Node.js process
 
 Attach options:
   --port PORT        V8 inspector port (default: 9229)
@@ -614,7 +704,8 @@ Attach options:
   --mcp              MCP server on stdio
   --http[=PORT]      HTTP API server (default: 3099)
   --http-only        HTTP only, no stdio transport
-  --token TOKEN      Bearer token for HTTP auth
+  --token TOKEN      Bearer token for HTTP auth (or 'tok1:rw,tok2:ro')
+  --workers          Discover and attach to worker threads
   --chrome           Also launch Chrome for frontend debugging
 
 Examples:
@@ -625,6 +716,9 @@ Examples:
   mypry attach --json                        # ndjson for embedders
   mypry attach --mcp                         # MCP for Claude Code
   mypry attach --http-only                   # headless API
+  mypry attach --http-only --workers         # with worker thread support
+  mypry attach --http --token admin:rw,ro:ro # multi-token auth
+  mypry inject 12345                         # inject into running process
 ```
 
 ## Architecture
@@ -657,8 +751,8 @@ Your Code                    mypry
 |--------|---------|
 | `src/pry.ts` | `pry()` — opens inspector dynamically, fires `debugger` |
 | `src/browser.ts` | Browser `pry()` — fires `debugger` for Chrome CDP |
-| `src/core/session.ts` | Debugger session — pause, step, eval, smart serialization |
-| `src/core/cdp-client.ts` | Raw WebSocket CDP client |
+| `src/core/session.ts` | Debugger session — pause, step, eval, trace, smart serialization |
+| `src/core/cdp-client.ts` | Raw WebSocket CDP client + `WorkerCDPProxy` for worker threads |
 | `src/core/ops.ts` | Shared operation dispatch (used by all transports) |
 | `src/core/targets.ts` | Target discovery (Node inspector + Chrome tabs) |
 | `src/core/snapshot.ts` | State snapshot builder |
@@ -666,8 +760,8 @@ Your Code                    mypry
 | `src/transports/repl.ts` | Human REPL with ANSI colors |
 | `src/transports/ndjson.ts` | JSON stdio transport |
 | `src/transports/mcp.ts` | MCP server transport |
-| `src/transports/http.ts` | HTTP REST API transport |
-| `src/cli.ts` | CLI entry — `attach`, `open`, auto-reconnect |
+| `src/transports/http.ts` | HTTP REST API + SSE + batch + auth + worker routing |
+| `src/cli.ts` | CLI entry — `attach`, `open`, `inject`, auto-reconnect |
 
 ## Requirements
 
