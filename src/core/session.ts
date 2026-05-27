@@ -77,12 +77,25 @@ export class DebuggerSession {
   async evalInFrame(expr: string): Promise<any> {
     const frame = this.topFrame()
     if (!frame) throw new Error('not paused')
-    return this.cdp.send('Debugger.evaluateOnCallFrame', {
-      callFrameId: frame.callFrameId,
-      expression: expr,
-      returnByValue: true,
-      generatePreview: true,
-    })
+    try {
+      return await this.cdp.send('Debugger.evaluateOnCallFrame', {
+        callFrameId: frame.callFrameId,
+        expression: expr,
+        returnByValue: true,
+        generatePreview: true,
+      })
+    } catch (err: any) {
+      // Circular/deep objects (Vue reactives, etc.) fail with returnByValue
+      // Retry with preview-only mode
+      if (err?.message?.includes('too long') || err?.message?.includes('-32000')) {
+        return this.cdp.send('Debugger.evaluateOnCallFrame', {
+          callFrameId: frame.callFrameId,
+          expression: `(function() { try { return JSON.stringify(${expr}, null, 2).slice(0, 4000); } catch(e) { return String(${expr}); } })()`,
+          returnByValue: true,
+        })
+      }
+      throw err
+    }
   }
 
   async getLocals(): Promise<Record<string, unknown>> {
