@@ -305,7 +305,7 @@ curl -X POST localhost:3099/command -d '{"op":"state"}'
 |----|--------|-------------|
 | `state` | — | Current pause location, source, locals |
 | `eval` | `expr` | Evaluate expression in paused frame |
-| `continue` | — | Resume, returns next pause or `terminated` |
+| `continue` | — | Resume execution (returns immediately) |
 | `step_over` | — | Step to next line |
 | `step_into` | — | Step into function call |
 | `step_out` | — | Step out of current function |
