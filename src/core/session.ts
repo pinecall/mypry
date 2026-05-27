@@ -86,20 +86,32 @@ export class DebuggerSession {
       })
     } catch (err: any) {
       // Circular/deep objects (Vue reactives, etc.) fail with returnByValue
-      // Retry with circular-safe JSON
+      // Retry with circular-safe JSON + Vue unwrapping
       if (err?.message?.includes('too long') || err?.message?.includes('-32000')) {
         return this.cdp.send('Debugger.evaluateOnCallFrame', {
           callFrameId: frame.callFrameId,
           expression: `(function(v) {
-            var seen = new WeakSet();
-            return JSON.stringify(v, function(k, val) {
-              if (typeof val === 'object' && val !== null) {
-                if (seen.has(val)) return '[Circular]';
-                seen.add(val);
-              }
-              if (typeof val === 'function') return '[Function: ' + (val.name || 'anonymous') + ']';
-              return val;
-            }, 2).slice(0, 8000);
+            try {
+              if (v && v.__v_isRef) v = v.value;
+              if (v && v.__v_raw) v = v.__v_raw;
+              if (v === null) return 'null';
+              if (v === undefined) return 'undefined';
+              if (typeof v !== 'object' && typeof v !== 'function') return String(v);
+              var seen = new WeakSet();
+              var depth = 0;
+              return JSON.stringify(v, function(k, val) {
+                if (typeof val === 'object' && val !== null) {
+                  if (val.__v_isRef) val = val.value;
+                  if (val && val.__v_raw) val = val.__v_raw;
+                  if (seen.has(val)) return '[Circular]';
+                  seen.add(val);
+                }
+                if (typeof val === 'function') return '[Function: ' + (val.name || 'anon') + ']';
+                return val;
+              }, 2).slice(0, 8000);
+            } catch(e) {
+              return typeof v + ': ' + (v && v.constructor ? v.constructor.name : String(v));
+            }
           })(${expr})`,
           returnByValue: true,
         })
