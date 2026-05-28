@@ -90,6 +90,7 @@ async function main(): Promise<void> {
       'tab-url': { type: 'string' },
       chrome: { type: 'boolean', default: false },
       frontend: { type: 'string' },           // --frontend URL (cleaner --chrome)
+      'chrome-host': { type: 'string' },        // remote Chrome CDP host:port
       workers: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
     }
   }
   applyDefault('frontend', configFile.frontend)
+  applyDefault('chrome-host', configFile.chromeHost)
   applyDefault('token', configFile.token)
   applyDefault('host', configFile.host)
   applyDefault('inspect', configFile.inspect ? String(configFile.inspect) : undefined)
@@ -173,6 +175,7 @@ async function main(): Promise<void> {
       `  --port PORT             HTTP API port (default: 3098)\n` +
       `  --inspect PORT          Backend inspector port (default: 9229)\n` +
       `  --frontend URL          Connect Chrome to URL for fullstack debugging\n` +
+      `  --chrome-host HOST:PORT Connect to remote Chrome CDP (skip local launch)\n` +
       `  --token TOKEN           Bearer token for HTTP auth\n\n` +
       `Attach options (interactive REPL):\n` +
       `  --port PORT             V8 inspector port (default: 9229)\n` +
@@ -443,38 +446,62 @@ async function main(): Promise<void> {
       }
     }
 
-    // Kill any previous debug Chrome
-    try {
-      const { execSync } = await import('node:child_process')
-      execSync('pkill -f "remote-debugging-port=9222" 2>/dev/null', { stdio: 'ignore' })
-      await new Promise(r => setTimeout(r, 1000))
-    } catch {}
+    // Determine Chrome CDP host — local (127.0.0.1) or remote
+    const chromeHostRaw = values['chrome-host']
+    const isRemoteChrome = !!chromeHostRaw
+    let chromeHost = '127.0.0.1'
+    let chromePort = CHROME_DEBUG_PORT
+    if (chromeHostRaw) {
+      const parts = chromeHostRaw.split(':')
+      chromeHost = parts[0]
+      if (parts[1]) chromePort = parseInt(parts[1], 10)
+    }
 
-    // Launch Chrome with remote debugging
-    const chromePath = await findChrome()
+    if (!isRemoteChrome) {
+      // Local: kill previous, launch Chrome with remote debugging
+      try {
+        const { execSync } = await import('node:child_process')
+        execSync('pkill -f "remote-debugging-port=9222" 2>/dev/null', { stdio: 'ignore' })
+        await new Promise(r => setTimeout(r, 1000))
+      } catch {}
 
-    const { spawn } = await import('node:child_process')
-    const chromeProc = spawn(chromePath, [
-      `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--user-data-dir=/tmp/mypry-chrome-debug',
-      chromeUrl,
-    ], { stdio: 'ignore', detached: true })
-    chromeProc.unref()
+      const chromePath = await findChrome()
+
+      const { spawn } = await import('node:child_process')
+      const chromeProc = spawn(chromePath, [
+        `--remote-debugging-port=${chromePort}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--user-data-dir=/tmp/mypry-chrome-debug',
+        chromeUrl,
+      ], { stdio: 'ignore', detached: true })
+      chromeProc.unref()
+    } else {
+      process.stderr.write(`[mypry] connecting to remote Chrome at ${chromeHost}:${chromePort}\n`)
+    }
 
     // Wait for Chrome CDP to be ready
-    process.stderr.write(`[mypry] waiting for Chrome CDP on port ${CHROME_DEBUG_PORT}...\n`)
+    process.stderr.write(`[mypry] waiting for Chrome CDP on ${chromeHost}:${chromePort}...\n`)
     let frontendWsUrl = ''
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 500))
       try {
-        const targets = await discoverTargets('127.0.0.1', CHROME_DEBUG_PORT)
-        const pageTarget = targets.find(t =>
-          t.kind === 'chrome' && t.url?.includes(chromeUrl!.replace(/^https?:\/\//, ''))
-        )
+        const targets = await discoverTargets(chromeHost, chromePort)
+        // For remote Chrome, pick first page target; for local, match URL
+        const pageTarget = isRemoteChrome
+          ? targets.find(t => t.kind === 'chrome')
+          : targets.find(t =>
+              t.kind === 'chrome' && t.url?.includes(chromeUrl!.replace(/^https?:\/\//, ''))
+            )
         if (pageTarget) {
           frontendWsUrl = pageTarget.wsUrl
+          // For remote Chrome, fix the WebSocket URL to use the correct host
+          if (isRemoteChrome && frontendWsUrl.includes('127.0.0.1')) {
+            frontendWsUrl = frontendWsUrl.replace('127.0.0.1', chromeHost)
+          }
+          if (isRemoteChrome && frontendWsUrl.includes('localhost')) {
+            frontendWsUrl = frontendWsUrl.replace('localhost', chromeHost)
+          }
           process.stderr.write(`[mypry] Chrome tab: ${pageTarget.title || pageTarget.url}\n`)
           break
         }
