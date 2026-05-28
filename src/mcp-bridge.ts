@@ -67,6 +67,9 @@ const mcpTools = TOOLS.map(t => {
     if (p === 'worker')    { properties.worker     = { type: 'string', description: 'Worker session ID (from debugger_workers)' } }
   }
 
+  // Every tool supports target switching for fullstack debugging
+  properties.target = { type: 'string', description: 'Target: "backend" (default) or "frontend" (Chrome CDP)', enum: ['backend', 'frontend'] }
+
   return {
     name: t.name,
     description: t.description,

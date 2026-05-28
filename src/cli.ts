@@ -403,6 +403,7 @@ async function main(): Promise<void> {
       port: httpPort,
       token: values.token,
       workerSessions: workerSessions.size > 0 ? workerSessions : undefined,
+      frontendSession,
     })
     process.stderr.write(`[mypry] HTTP server listening on http://127.0.0.1:${httpPort}\n`)
   }

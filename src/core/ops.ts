@@ -7,8 +7,25 @@
 
 import type { DebuggerSession } from './session.js'
 import { snapshot, cleanUrl } from './snapshot.js'
+import { resolveOriginalPosition, readOriginalSource } from './sourcemap.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Resolve a script location to its original .ts path via source maps.
+ */
+async function resolveFrame(session: DebuggerSession, scriptId: string, lineNumber: number): Promise<{ file: string; line: number }> {
+  const script = session.scripts.get(scriptId)
+  const compiledFile = cleanUrl(script?.url)
+  const compiledLine = lineNumber + 1
+
+  if (script?.source) {
+    const orig = await resolveOriginalPosition(compiledFile, script.source, compiledLine, 0)
+    if (orig) return { file: orig.source, line: orig.line }
+  }
+
+  return { file: compiledFile, line: compiledLine }
+}
 
 export async function executeOp(
   session: DebuggerSession,
@@ -56,10 +73,16 @@ export async function executeOp(
       return { locals: await session.getLocals() }
 
     case 'backtrace': {
-      const frames = (session.currentPause?.callFrames || []).map((f: any) => ({
-        function: f.functionName || '<anon>',
-        file: cleanUrl(session.scripts.get(f.location.scriptId)?.url),
-        line: f.location.lineNumber + 1,
+      const rawFrames = session.currentPause?.callFrames || []
+      const frames = await Promise.all(rawFrames.map(async (f: any) => {
+        // Load source if needed (for source map resolution)
+        await session.getSource(f.location.scriptId)
+        const resolved = await resolveFrame(session, f.location.scriptId, f.location.lineNumber)
+        return {
+          function: f.functionName || '<anon>',
+          file: resolved.file,
+          line: resolved.line,
+        }
       }))
       return { frames }
     }
@@ -68,11 +91,25 @@ export async function executeOp(
       const f = session.topFrame()
       if (!f) return { error: 'not paused' }
       const s = await session.getSource(f.location.scriptId)
-      return {
-        file: cleanUrl(s?.url),
-        source: s?.source || '',
-        current_line: f.location.lineNumber + 1,
+      const compiledFile = cleanUrl(s?.url)
+      const compiledLine = f.location.lineNumber + 1
+
+      // Try source map resolution
+      let file = compiledFile
+      let source = s?.source || ''
+      let currentLine = compiledLine
+
+      if (s?.source) {
+        const orig = await resolveOriginalPosition(compiledFile, s.source, compiledLine, 0)
+        if (orig) {
+          file = orig.source
+          currentLine = orig.line
+          const origSource = readOriginalSource(orig.source)
+          if (origSource) source = origSource
+        }
       }
+
+      return { file, source, current_line: currentLine }
     }
 
     case 'set_breakpoint': {

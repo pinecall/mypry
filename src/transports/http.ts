@@ -32,6 +32,7 @@ export interface HttpServerOptions {
   host?: string           // default 127.0.0.1
   token?: string          // single token (rw) or 'tok1:rw,tok2:ro' for multi
   workerSessions?: Map<string, { info: WorkerInfo, session: DebuggerSession }>
+  frontendSession?: DebuggerSession  // Chrome CDP session for frontend debugging
   pairChannel?: EventEmitter
 }
 
@@ -175,9 +176,12 @@ export async function startHttpServer(
         if ((req as any)._perm === 'ro' && !isReadOnlyOp(body.op)) {
           return respond(res, 403, { error: `Forbidden — '${body.op}' requires rw token` })
         }
-        // Route to worker session if specified
+        // Route to target session: frontend, worker, or backend (default)
         let targetSession = session
-        if (body.worker && opts.workerSessions) {
+        if (body.target === 'frontend') {
+          if (!opts.frontendSession) return respond(res, 404, { error: 'no frontend session — start with --chrome' })
+          targetSession = opts.frontendSession
+        } else if (body.worker && opts.workerSessions) {
           const ws = opts.workerSessions.get(body.worker)
           if (!ws) return respond(res, 404, { error: `worker '${body.worker}' not found` })
           targetSession = ws.session
