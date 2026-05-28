@@ -1,7 +1,29 @@
 {
   "name": "mypry",
-  "version": "0.1.0",
-  "description": "Node + browser debugger with inline pry() trigger, REPL, MCP, and HTTP — pairs with your AI agent",
+  "version": "0.1.0-beta.1",
+  "description": "The interactive full-stack debugger for AI agents — pause, step, and inspect across Node.js and Chrome via MCP",
+  "author": "Pinecall",
+  "license": "MIT",
+  "homepage": "https://github.com/pinecall/mypry#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pinecall/mypry.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pinecall/mypry/issues"
+  },
+  "keywords": [
+    "debugger",
+    "mcp",
+    "ai-agent",
+    "node-inspector",
+    "cdp",
+    "chrome-devtools-protocol",
+    "breakpoint",
+    "fullstack",
+    "typescript",
+    "source-maps"
+  ],
   "type": "module",
   "main": "./lib/pry.cjs",
   "types": "./dist/pry.d.ts",
