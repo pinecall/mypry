@@ -329,7 +329,7 @@ mypry attach --http --token s3cr3t  # with bearer auth
 | GET | `/workers` | List worker thread sessions |
 | GET | `/traces` | Current trace buffer |
 | GET | `/events` | **SSE stream** — real-time events (no polling) |
-| POST | `/command` | Single op: `{op, ...params}` (optional `worker` field to target worker) |
+| POST | `/command` | Single op: `{op, ...params, target?, worker?}` — `target: "frontend"` routes to Chrome |
 | POST | `/batch` | Multiple ops: `{ops: [{op, ...}, ...]}` → `{results: [...]}` |
 
 ### Endpoint Examples
@@ -446,8 +446,8 @@ curl -H "Authorization: Bearer s3cr3t" localhost:3099/health
 | `step_into` | — | Step into function call |
 | `step_out` | — | Step out of current function |
 | `locals` | — | All local variables |
-| `backtrace` | — | Call stack frames |
-| `source` | — | Current file source + line |
+| `backtrace` | — | Call stack frames (source-mapped to .ts/.vue) |
+| `source` | — | Current file source + line (source-mapped) |
 | `set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint (with optional condition expression) |
 | `remove_breakpoint` | `id` | Remove by ID |
 | `breakpoints` | — | List active breakpoints |
@@ -736,12 +736,14 @@ mypry attach --http-only --port 9229 --http=3098 --workers
 | `debugger_set_breakpoint` | Set breakpoint with optional `condition` expression |
 | `debugger_remove_breakpoint` | Remove breakpoint by ID |
 | `debugger_list_breakpoints` | List all active breakpoints |
-| `debugger_backtrace` | Call stack frames |
-| `debugger_source` | Full source of current file |
+| `debugger_backtrace` | Call stack frames (source-mapped to .ts) |
+| `debugger_source` | Full source of current file (source-mapped) |
 | `debugger_trace_start` | Start trace mode — auto-resume, collect snapshots |
 | `debugger_trace_stop` | Stop trace, return all collected hits |
 | `debugger_trace_status` | Peek at trace buffer without stopping |
 | `debugger_workers` | List worker threads with session IDs |
+
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry attach --chrome`.
 
 ### Web UI
 
@@ -764,33 +766,52 @@ Features: source view with current-line highlighting, locals panel, call stack, 
 
 ### Source Maps
 
-mypry automatically resolves source maps for TypeScript projects:
+mypry automatically resolves source maps — `state`, `backtrace`, and `source` all show original paths:
 
-- `dist/auth/auth.service.js:136` → `src/auth/auth.service.ts:151`
-- Source window shows original TypeScript source, not compiled JS
-- Requires `"sourceMap": true` in `tsconfig.json`
+| Pipeline | Before | After |
+|----------|--------|-------|
+| **tsc** (NestJS) | `dist/auth/auth.service.js:136` | `src/auth/auth.service.ts:151` |
+| **Vite** (Vue) | `http://localhost:3001/src/auth/Login.vue?t=123` | `src/auth/Login.vue` |
+
+- Source window shows original TypeScript/Vue source, not compiled JS
+- Column scanning (0–79) handles indented `debugger;` statements
+- Backend: requires `"sourceMap": true` in `tsconfig.json`
+- Frontend: Vite dev mode generates inline source maps automatically
 
 ### Frontend Debugging (Chrome CDP)
 
+**Unified mode** — one daemon handles both backend and frontend:
+
 ```bash
-# Start Chrome with debug port
-mypry open http://localhost:3001
-
-# Start daemon pointing to Chrome
-mypry attach --http-only --port 9222 --http=3097
+# One daemon, two targets
+mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
 ```
 
-`debugger_eval` works without pausing (uses `Runtime.evaluate`):
+Use `target: "frontend"` to route commands to Chrome:
 ```
-→ debugger_eval {"expr": "document.title"}
-← {"ok": true, "value": "MyApp"}
+→ {op: "eval", target: "frontend", expr: "document.title"}
+← {ok: true, value: "ServiceHub"}
+
+→ {op: "eval", target: "frontend", expr: "window.location.href"}
+← {ok: true, value: "http://localhost:3001/login"}
+```
+
+Pause inside Vue components — closure variables accessible:
+```
+→ {op: "state", target: "frontend"}
+← {status: "paused", function: "handleDevLogin", file: "Login.vue",
+   locals: {persona: {role: "superadmin", email: "superadmin@test.com"}}}
+
+→ {op: "eval", target: "frontend", expr: "authStore"}
+← {ok: true, value: {token: null, loading: false, isAuthenticated: false}}
+                     ↑ Pinia $state auto-unwrapped!
 ```
 
 Install interceptors to catch specific requests:
 ```
-→ debugger_eval {"expr": "...XMLHttpRequest.prototype.send = function(body) { if (this._url.includes('/auth/')) { debugger; } ... }"}
+→ {op: "eval", target: "frontend", expr: "...XMLHttpRequest.prototype.send = function(body) { if (this._url.includes('/auth/')) { debugger; } ... }"}
 → (user clicks login)
-→ debugger_state {} → paused at XMLHttpRequest.send, locals: {body: '{"email":"..."}' }
+→ {op: "state", target: "frontend"} → paused at XMLHttpRequest.send, locals: {body: '{"email":"..."}'}
 ```
 
 
@@ -879,6 +900,16 @@ AI Agent Integration:
 | `src/transports/http.ts` | HTTP REST API + SSE + batch + auth + workers |
 | `src/mcp-bridge.ts` | Stateless MCP→HTTP bridge (for daemon architecture) |
 | `src/cli.ts` | CLI entry — `attach`, `open`, `inject`, auto-reconnect |
+
+## Tests
+
+```bash
+npm run test:suite     # 16 ndjson contract tests (node:test)
+npm run test:contract  # Aurora protocol contract tests
+npm test               # both
+```
+
+Covers: state, eval, backtrace, source, breakpoints, step (over/into/out), continue, quit, error handling, invalid JSON.
 
 ## Requirements
 

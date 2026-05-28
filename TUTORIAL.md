@@ -359,6 +359,8 @@ Pauses wherever execution happens to be. Useful for inspecting stuck or slow pro
 
 mypry automatically resolves source maps. If your project compiles TypeScript to JavaScript (NestJS, Next.js, etc.), the debugger shows the **original .ts file** and line numbers, not the compiled `dist/*.js`.
 
+This applies to **all three ops**: `state`, `backtrace`, and `source`.
+
 ### Example: NestJS auth service
 
 ```
@@ -367,19 +369,26 @@ mypry automatically resolves source maps. If your project compiles TypeScript to
     "status": "paused",
     "file": "/project/src/auth/auth.service.ts",    ← original TypeScript
     "line": 151,                                      ← correct .ts line number
-    "function": "validateUser",
-    "source_window": [
-      {"line": 147, "text": "    this.logger.debug(`Password matches for ${emailAddress}`);"},
-      {"line": 149, "text": "    // eslint-disable-next-line no-debugger"},
-      {"line": 151, "text": "    debugger;", "current": true},
-      {"line": 153, "text": "    return user;"}
-    ]
+    ...
   }
+
+→ debugger_backtrace {}
+← {"frames": [{"function": "validateUser", "file": ".../src/auth/auth.service.ts", "line": 151}]}
+                                                       ↑ source-mapped, not dist/*.js
+```
+
+### Frontend source maps (Vite)
+
+Vite dev server URLs are automatically resolved:
+```
+http://localhost:3001/src/auth/Login.vue?t=12345  →  src/auth/Login.vue
 ```
 
 Without source maps, the same pause would show `dist/auth/auth.service.js:136` with compiled JavaScript — useless for an agent trying to propose code edits.
 
-**Requirements:** Your `tsconfig.json` must have `"sourceMap": true` and the `.js.map` files must exist alongside the compiled `.js` files.
+**Requirements:** 
+- Backend: `"sourceMap": true` in `tsconfig.json`, `.js.map` files alongside compiled `.js`
+- Frontend: Vite dev mode generates inline source maps automatically
 
 ---
 
@@ -387,58 +396,56 @@ Without source maps, the same pause would show `dist/auth/auth.service.js:136` w
 
 mypry connects to Chrome's DevTools Protocol for frontend debugging — same tools, same API.
 
-### Setup
+### Setup: unified daemon
 
 ```bash
-# Start Chrome with debugging port
-mypry open http://localhost:3001
-
-# Start daemon pointing to Chrome
-mypry attach --http-only --port 9222 --http=3097
+# One daemon handles both backend (:9229) and Chrome (:9222)
+mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
 ```
+
+Use `target: "frontend"` on any tool to route to Chrome. Default is backend.
 
 ### Global eval (no pause needed)
 
 When the process is running, `debugger_eval` uses `Runtime.evaluate` for global scope access:
 
 ```
-→ debugger_eval {"expr": "document.title"}
+→ debugger_eval {target: "frontend", expr: "document.title"}
 ← {"ok": true, "value": "ServiceHub"}
 
-→ debugger_eval {"expr": "window.location.href"}
+→ debugger_eval {target: "frontend", expr: "window.location.href"}
 ← {"ok": true, "value": "http://localhost:3001/login"}
-
-→ debugger_eval {"expr": "document.querySelectorAll('input').length"}
-← {"ok": true, "value": 3}
 ```
 
-### Install an XHR/fetch interceptor
+### Vue/Pinia: pause in component, inspect reactive state
 
 ```
-→ debugger_eval {"expr": "var _origSend = XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.send = function(body) { if (this._mypryUrl) { debugger; } return _origSend.apply(this, arguments); }; 'interceptor installed'"}
+→ debugger_state {target: "frontend"}
+← {"status": "paused", "function": "handleDevLogin", "file": "Login.vue"}
+
+→ debugger_eval {target: "frontend", expr: "authStore"}
+← {"ok": true, "value": {"token": null, "loading": false, "isAuthenticated": false}}
+                          ↑ Pinia $state auto-unwrapped!
+
+→ debugger_eval {target: "frontend", expr: "devLoginLoading"}
+← {"ok": true, "value": "superadmin"}
+                          ↑ Vue ref() auto-unwrapped!
+```
+
+### Catch a login request with XHR interceptor
+
+```
+→ debugger_eval {target: "frontend", expr: "...XHR.send override with debugger..."}
 ← {"ok": true, "value": "interceptor installed"}
-```
 
-### Catch a login request
-
-```
-→ debugger_eval {"expr": "document.querySelector('#login-btn')?.click()"}
-
+→ debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
 (page pauses at XMLHttpRequest.send)
 
-→ debugger_state {}
-← {
-    "status": "paused",
-    "function": "XMLHttpRequest.send",
-    "locals": {
-      "body": "{\"emailAddress\":\"admin@test.com\",\"password\":\"secret\"}"
-    }
-  }
+→ debugger_state {target: "frontend"}
+← {"status": "paused", "function": "XMLHttpRequest.send",
+   "locals": {"body": "{\"emailAddress\":\"admin@test.com\",\"password\":\"secret\"}"}}
 
-→ debugger_eval {"expr": "JSON.parse(body)"}
-← {"ok": true, "value": {"emailAddress": "admin@test.com", "password": "secret"}}
-
-→ debugger_continue {}
+→ debugger_continue {target: "frontend"}
 ```
 
 ---
@@ -527,8 +534,8 @@ mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
 | `debugger_set_breakpoint` | `file`, `line`, `condition?` | No | Set BP (optional condition) |
 | `debugger_remove_breakpoint` | `id` | No | Remove BP by ID |
 | `debugger_list_breakpoints` | — | No | List all active BPs |
-| `debugger_backtrace` | — | No | Call stack frames |
-| `debugger_source` | `file?` | No | Full source of current file |
+| `debugger_backtrace` | — | No | Call stack (source-mapped to .ts) |
+| `debugger_source` | `file?` | No | Source of current file (source-mapped) |
 | `debugger_trace_start` | `maxBuffer?` | No | Start trace (auto-resume) |
 | `debugger_trace_stop` | — | No | Stop trace, return hits |
 | `debugger_trace_status` | — | No | Peek at trace buffer |

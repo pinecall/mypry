@@ -107,21 +107,53 @@ When the mypry MCP server is active, these tools are available:
 ### 5. Frontend Debugging (Chrome CDP)
 
 ```bash
-# Setup: start daemon pointing to Chrome's debug port
-mypry attach --http-only --port 9222 --http=3097
+# Setup: unified daemon with --chrome (backend + frontend in ONE session)
+mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
 ```
 
 ```
-1. mcp_mypry_debugger_eval {expr: "document.title"}
+1. mcp_mypry_debugger_eval {target: "frontend", expr: "document.title"}
    → eval runs globally (Runtime.evaluate) — no pause needed
-2. mcp_mypry_debugger_eval {expr: "install XHR interceptor with debugger;"}
+2. mcp_mypry_debugger_eval {target: "frontend", expr: "install XHR interceptor with debugger;"}
    → any XHR to /auth/ will trigger a pause
 3. (user clicks login button)
-4. mcp_mypry_debugger_state
+4. mcp_mypry_debugger_state {target: "frontend"}
    → paused at XMLHttpRequest.send, locals: {body: '{"emailAddress":"..."}'}
-5. mcp_mypry_debugger_eval {expr: "JSON.parse(body)"}
+5. mcp_mypry_debugger_eval {target: "frontend", expr: "JSON.parse(body)"}
    → inspect the request payload
-6. mcp_mypry_debugger_continue
+6. mcp_mypry_debugger_continue {target: "frontend"}
+```
+
+### 6. Fullstack Handoff (frontend → backend in ONE session)
+
+```
+1. mcp_mypry_debugger_eval {target: "frontend", expr: "install XHR interceptor"}
+2. mcp_mypry_debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
+   → frontend pauses at XMLHttpRequest.send
+3. mcp_mypry_debugger_state {target: "frontend"}
+   → locals: {body: '{"emailAddress":"superadmin@test.com","password":"admin"}'}
+4. mcp_mypry_debugger_continue {target: "frontend"}
+   → request flies to backend
+5. mcp_mypry_debugger_state {}
+   → paused at src/auth/auth.service.ts:151 (source-mapped!)
+   → locals: {emailAddress: "superadmin@test.com", user: "User", isMatch: true}
+6. mcp_mypry_debugger_eval {expr: "user.role?.name"}
+   → "Superadmin"
+7. mcp_mypry_debugger_continue {}
+```
+
+### 7. Vue/Pinia State Inspection
+
+```
+# When paused inside a Vue component handler:
+1. mcp_mypry_debugger_eval {target: "frontend", expr: "authStore"}
+   → {token: null, loading: false, isAuthenticated: false}  (Pinia $state auto-unwrapped)
+2. mcp_mypry_debugger_eval {target: "frontend", expr: "devLoginLoading"}
+   → "superadmin"  (Vue ref() auto-unwrapped)
+
+# Global Pinia access (no pause needed):
+3. mcp_mypry_debugger_eval {target: "frontend", expr: "document.getElementById('app').__vue_app__.config.globalProperties.$pinia.state.value.auth"}
+   → full auth store state
 ```
 
 ---
@@ -170,16 +202,20 @@ curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"continue"}
 
 4. **Workers don't have separate ports** — they're accessed via the `worker` parameter on eval/state/continue commands.
 
-5. **Source maps are automatic** — TypeScript projects show `src/auth/auth.service.ts:151` instead of `dist/auth/auth.service.js:136`. Source window shows original .ts source code. Requires `"sourceMap": true` in tsconfig.
+5. **Source maps are automatic** — state, backtrace, and source all resolve to original paths:
+   - **tsc** (NestJS): `dist/auth/auth.service.js:136` → `src/auth/auth.service.ts:151`
+   - **Vite** (Vue): `http://localhost:3001/src/auth/Login.vue?t=123` → `src/auth/Login.vue`
+   - Column scanning (0–79) handles indented `debugger;` statements.
 
 6. **Global eval works when not paused** — `debugger_eval` falls back to `Runtime.evaluate` (global scope). Use it to query DOM, install interceptors, or check globals on a running process.
 
-7. **Frontend debugging via Chrome CDP** — connect daemon to Chrome's debug port (`--port 9222`). Same tools work: eval, pause, breakpoints, step.
+7. **Frontend debugging via `--chrome`** — unified daemon connects to both Node.js (:9229) and Chrome (:9222). Use `target: "frontend"` on any tool to route to the browser.
 
 ## Architecture
 
 ```
-Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CDP) → Node.js
+Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CDP) → Node.js (:9229)
+                                                                    → (CDP) → Chrome  (:9222)
 ```
 
 - **MCP Bridge** (`mcp-bridge.js`): stateless proxy, starts instantly, never blocks
@@ -190,7 +226,11 @@ Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CD
 **1. Start the daemon** (before using MCP tools):
 
 ```bash
+# Backend only
 mypry attach --http-only --port 9229 --http=3098 --workers
+
+# Fullstack (backend + Chrome)
+mypry attach --http-only --port 9229 --http=3098 --workers --chrome http://localhost:3001
 ```
 
 > Aurora's TUI starts its own debugger on :3099. For standalone debugging, use :3098.
