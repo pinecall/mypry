@@ -93,7 +93,13 @@ export class DebuggerSession {
 
   async evalInFrame(expr: string): Promise<any> {
     const frame = this.topFrame()
-    if (!frame) throw new Error('not paused')
+    if (!frame) {
+      // Not paused — use Runtime.evaluate for global scope eval
+      return this.cdp.send('Runtime.evaluate', {
+        expression: expr,
+        returnByValue: true,
+      })
+    }
 
     // Always use smart serializer — CDP returnByValue silently returns {}
     // for Vue/Pinia Proxy objects, so we can't rely on it.
