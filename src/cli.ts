@@ -96,6 +96,35 @@ async function main(): Promise<void> {
     allowPositionals: true,
   })
 
+  // ── Load .mypry.json config file (if present in CWD) ──
+  let configFile: Record<string, any> = {}
+  try {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const cfgPath = resolve(process.cwd(), '.mypry.json')
+    const raw = readFileSync(cfgPath, 'utf-8')
+    configFile = JSON.parse(raw)
+    process.stderr.write(`[mypry] loaded config from .mypry.json\n`)
+  } catch { /* no config file — that's fine */ }
+
+  // Merge config → values (CLI flags take priority)
+  // Config keys: port, inspect, frontend, token, host, workers
+  function applyDefault(key: string, val: any) {
+    if (val === undefined || val === null) return
+    if ((values as any)[key] === undefined || (values as any)[key] === false ||
+        ((values as any)[key] === '9229' && key === 'port')) {
+      ;(values as any)[key] = typeof val === 'number' ? String(val) : val
+    }
+  }
+  applyDefault('frontend', configFile.frontend)
+  applyDefault('token', configFile.token)
+  applyDefault('host', configFile.host)
+  applyDefault('inspect', configFile.inspect ? String(configFile.inspect) : undefined)
+  if (configFile.port && !values.http) {
+    applyDefault('http', String(configFile.port))
+  }
+  if (configFile.workers === true) values.workers = true
+
   // ── `mypry serve` normalisation ──
   // `serve` = HTTP daemon for agents. Clean, opinionated defaults.
   const isServe = positionals[0] === 'serve'
@@ -121,7 +150,6 @@ async function main(): Promise<void> {
     )
     if (frontendUrl) {
       values.chrome = true
-      // Store the URL for later use
       ;(values as any)._frontendUrl = frontendUrl.startsWith('http') ? frontendUrl : `http://${frontendUrl}`
     }
   }
@@ -144,7 +172,7 @@ async function main(): Promise<void> {
       `Serve options (daemon mode):\n` +
       `  --port PORT             HTTP API port (default: 3098)\n` +
       `  --inspect PORT          Backend inspector port (default: 9229)\n` +
-      `  --frontend URL          Also connect Chrome for fullstack debugging\n` +
+      `  --frontend URL          Connect Chrome to URL for fullstack debugging\n` +
       `  --token TOKEN           Bearer token for HTTP auth\n\n` +
       `Attach options (interactive REPL):\n` +
       `  --port PORT             V8 inspector port (default: 9229)\n` +
@@ -153,6 +181,8 @@ async function main(): Promise<void> {
       `  --json                  ndjson stdio transport\n` +
       `  --mcp                   MCP server on stdio\n` +
       `  --frontend URL          Also launch Chrome for frontend debugging\n\n` +
+      `Config file (.mypry.json in project root):\n` +
+      `  {"port": 3098, "frontend": "http://localhost:3001"}\n\n` +
       `Examples:\n` +
       `  mypry serve                                    # backend daemon on :3098\n` +
       `  mypry serve --frontend http://localhost:3001    # fullstack daemon\n` +
