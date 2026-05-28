@@ -639,13 +639,15 @@ async function main(): Promise<void> {
   let httpServer: HttpServer | undefined
 
   if (httpEnabled) {
+    const httpHost = values.host === '127.0.0.1' ? undefined : values.host
     httpServer = await startHttpServer(backendSession, {
       port: httpPort,
+      host: httpHost,
       token: values.token,
       workerSessions: workerSessions.size > 0 ? workerSessions : undefined,
       frontendSession,
     })
-    process.stderr.write(`[mypry] HTTP server listening on http://127.0.0.1:${httpPort}\n`)
+    process.stderr.write(`[mypry] HTTP server listening on http://${httpHost || '127.0.0.1'}:${httpPort}\n`)
   }
 
   if (values['http-only']) {
