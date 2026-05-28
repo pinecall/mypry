@@ -149,9 +149,16 @@ npm link                   # makes mypry + mypry-bridge available globally
 
 ```
 test/
-  ndjson-contract.test.ts  — main test suite (16 tests)
-test-aurora-contract.cjs   — Aurora TUI contract tests
+  ndjson-contract.test.ts         — NDJSON contract tests (16 tests)
+  fullstack-integration.test.ts   — fullstack integration tests (7 tests)
 ```
+
+| Suite | Command | What it tests |
+|-------|---------|---------------|
+| Contract | `npm test` | All debugger ops via NDJSON transport |
+| Integration | `npm run test:integration` | Express + React/Vite + Chrome + mypry serve |
+
+The integration tests spin up the `examples/fullstack` app, launch headless Chrome, start `mypry serve`, and validate backend breakpoints, frontend source-map breakpoints, eval, locals, and breakpoint lifecycle.
 
 ### Verified features
 
