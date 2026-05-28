@@ -104,12 +104,12 @@ All tools accept optional `target` (`"frontend"` / `"backend"`) and `worker` par
 ## CLI Commands
 
 ```bash
-mypry serve                                    # daemon on :3098
+mypry serve                                    # daemon on :3098 (+ live watch output)
 mypry serve --frontend http://localhost:3001   # + Chrome CDP
 mypry serve --port 3099 --inspect 9230         # custom ports
 mypry serve --host 0.0.0.0 --token s3cr3t     # remote + auth
 
-mypry watch                                    # live monitor (SSE)
+mypry watch                                    # remote monitor (SSE)
 mypry watch --host staging --port 3099         # remote monitor
 
 mypry open http://localhost:3001               # launch debug Chrome
@@ -158,6 +158,7 @@ test-aurora-contract.cjs   — Aurora TUI contract tests
 All these have been tested end-to-end:
 
 - ✅ Backend breakpoints (debugger; + set_breakpoint)
+- ✅ TypeScript source-map-aware breakpoints (set_breakpoint on .ts files)
 - ✅ Conditional breakpoints
 - ✅ Eval in paused frame + running global
 - ✅ Step over/into/out
@@ -168,7 +169,7 @@ All these have been tested end-to-end:
 - ✅ Fullstack handoff (frontend → backend in one session)
 - ✅ Remote debugging (Mac → SSH tunnel → GCP server)
 - ✅ Auto-reconnect (nodemon, NestJS --watch)
-- ✅ `mypry watch` live monitor (local + remote)
+- ✅ `mypry serve` inline live monitor (replaces separate `mypry watch`)
 - ✅ Token auth (Bearer token)
 
 ---
@@ -193,8 +194,9 @@ All these have been tested end-to-end:
 
 1. **`debugger_continue` BLOCKS** — waits up to 30s for next pause. Don't call unless you expect a breakpoint.
 2. **Trace mode is non-blocking** — app runs normally, snapshots collected automatically.
-3. **Source maps are automatic** — TypeScript paths shown in state, backtrace, source.
+3. **Source maps are automatic** — TypeScript paths shown in state, backtrace, source. `set_breakpoint` on `.ts` resolves to `.js` via source maps.
 4. **Global eval when not paused** — falls back to `Runtime.evaluate` (global scope).
 5. **Vue/Pinia auto-unwrapping** — `ref()` and Pinia `$state` automatically unwrapped in eval results.
 6. **Auto-reconnect** — survives process restarts (every 2s, up to 40s).
 7. **`--host` binds HTTP too** — `--host 0.0.0.0` makes both inspector and HTTP daemon listen on all interfaces.
+8. **`mypry serve` shows live watch** — no separate `mypry watch` needed for local use.
