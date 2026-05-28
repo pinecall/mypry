@@ -157,10 +157,15 @@ Only pauses when the condition is truthy. Other requests pass through.
 
 ### Frontend debugging
 
+Works with **any framework** — React, Vue, Angular, Svelte, plain JS. Anything running in Chrome.
+
 ```
 → debugger_eval { target: "frontend", expr: "document.title" }
-→ debugger_eval { target: "frontend", expr: "authStore" }  // Pinia auto-unwrapped
+→ debugger_eval { target: "frontend", expr: "document.querySelector('#app').textContent" }
+→ debugger_set_breakpoint { target: "frontend", file: "Login.tsx", line: 42 }
 ```
+
+> Vue `ref()` and Pinia `$state` are auto-unwrapped. React/Angular/vanilla objects returned as-is.
 
 Requires Chrome with `--remote-debugging-port=9222`. Start with `mypry open <url>`.
 

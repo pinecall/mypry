@@ -85,9 +85,11 @@ debugger_state   { target: "frontend" }   → paused in Login.vue, locals: { bod
 debugger_continue{ target: "frontend" }    → request flies to the backend
 
 # Backend: catch the same request (same session, no target = backend)
-debugger_state   {}                        → paused at auth.service.ts:151  (source-mapped from dist/)
+debugger_state   {}                        → paused at auth.service.ts:147  (source-mapped from dist/)
 debugger_eval    { expr: "user.role" }     → "viewer"
 ```
+
+> **Any frontend framework works** — React, Vue, Angular, Svelte, plain JS. mypry debugs whatever runs in Chrome via CDP.
 
 No other maintained tool does interactive step-debugging on **both** the frontend and the backend in one session. That's the whole point.
 
@@ -145,7 +147,7 @@ debugger_set_breakpoint {
 
 ### Framework-aware values
 
-`eval` returns clean data, not proxy soup:
+`eval` returns clean data, not proxy soup. Works with **any framework** — Vue/Pinia unwrapping is automatic when detected, harmless otherwise:
 
 | Type | What you get back |
 |------|-------------------|
@@ -153,8 +155,7 @@ debugger_set_breakpoint {
 | Pinia store | auto-extracted `.$state` |
 | `reactive()` proxy | unwrapped via `__v_raw` |
 | Circular refs | `[Circular]` (no crash) |
-
-These checks are harmless no-ops for React / Angular / vanilla JS.
+| React state, Angular, plain objects | returned as-is (no special handling needed) |
 
 ### Worker threads
 
