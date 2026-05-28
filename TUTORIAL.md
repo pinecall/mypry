@@ -1,259 +1,226 @@
-# mypry — AI Agent Debugging Tutorial
+# mypry — Tutorial
 
-> **mypry** is a zero-config debugger for Node.js built for AI agents.
-> Drop `debugger` in your code. Your agent inspects, steps, evals, and continues — via MCP tools.
+**mypry** is the interactive full-stack debugger for AI agents. You drop a `debugger` statement (or set a breakpoint), and your agent inspects, steps, evaluates, and continues — across your backend **and** frontend, in one session.
 
-This tutorial shows every feature using MCP tool calls, exactly how an AI agent (Claude Code, Antigravity, Cursor) would use them.
-
----
-
-## Architecture
+This tutorial walks through every feature using **MCP tools only** — exactly the calls your agent (Claude Code, Cursor, Antigravity) makes. No HTTP, no curl against the debugger. The only shell commands you run are to start your app and the daemon.
 
 ```
-┌──────────┐  stdio   ┌───────────┐  HTTP   ┌────────────┐   CDP    ┌─────────┐
-│ AI Agent │─────────│ MCP Bridge │────────│ mypry      │────────│ Node.js │
-│          │          │ (instant)  │ :3098  │ daemon     │ :9229  │ process │
-└──────────┘          └───────────┘         └────────────┘        └─────────┘
+AI agent ── stdio ──▶ mcp-bridge ── HTTP ──▶ mypry daemon ── CDP ──▶ your app
+   you talk here          (instant, stateless)        (owns the connection)
 ```
 
-The MCP bridge starts instantly (never blocks). It proxies tool calls to the mypry HTTP daemon, which manages the CDP connection to Node.js.
+Everything below uses this notation:
+
+```
+→ debugger_state {}          # the tool call your agent makes
+← { "status": "paused", ...} # what comes back
+```
 
 ---
 
 ## Setup
 
-```bash
-cd mypry
-npm install && npm run build && npm link
-```
-
-### Start the example server
+### 1. Install
 
 ```bash
-node --inspect examples/tutorial-server.cjs
+npm install mypry
 ```
 
-### Start the daemon
+### 2. Create an app to debug
+
+Save this as `server.js`. Note the `debugger` on **line 12**.
+
+```js
+// server.js
+const http = require('http')
+
+const users = [
+  { id: 1, name: 'Alice', email: 'alice@example.com', role: 'user'  },
+  { id: 2, name: 'Admin', email: 'admin@example.com', role: 'admin' },
+]
+
+function authenticate(email, password) {
+  const user = users.find(u => u.email === email)
+  const isValid = user && password === 'secret'
+  debugger                                    // ← mypry pauses here
+  return isValid ? user : null
+}
+
+http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/login') {
+    let body = ''
+    req.on('data', c => (body += c))
+    req.on('end', () => {
+      const { email, password } = JSON.parse(body)
+      const user = authenticate(email, password)
+      res.end(JSON.stringify({ ok: !!user, user }))
+    })
+  } else {
+    res.end('ok')
+  }
+}).listen(4444, () => console.log('listening on :4444'))
+```
+
+### 3. Run it with the inspector open
+
+```bash
+node --inspect server.js
+# Debugger listening on ws://127.0.0.1:9229/...
+# listening on :4444
+```
+
+### 4. Start the mypry daemon
 
 ```bash
 mypry serve
 ```
 
-You should see:
+### 5. Connect your agent
 
-```
-Debugger attached.
-[mypry] worker attached: [worker 1] WorkerThread (1)
-[mypry] worker attached: [worker 2] WorkerThread (2)
-[mypry] HTTP server listening on http://127.0.0.1:3098
-```
-
-### Configure your agent's MCP
-
-**Antigravity** (`~/.gemini/config/mcp_config.json`):
-```json
-{ "mypry": { "command": "node", "args": ["/path/to/mypry/dist/mcp-bridge.js"] } }
-```
-
-**Claude Code** (`~/.claude/mcp.json`):
-```json
-{ "mcpServers": { "mypry": { "command": "node", "args": ["/path/to/mypry/dist/mcp-bridge.js"] } } }
-```
-
-**Aurora TUI** (debugger already on :3099):
-```json
-{ "mypry": { "command": "node", "args": ["mcp-bridge.js"], "env": { "MYPRY_URL": "http://127.0.0.1:3099/api/debugger" } } }
-```
-
----
-
-## The Example Server
-
-`examples/tutorial-server.cjs` — a tiny HTTP API:
-
-```
-┌─────────────────────────────────────┐
-│  tutorial-server.cjs  :4444         │
-│                                     │
-│  Main Thread                        │
-│  ├── POST /login ←── debugger ✦    │
-│  ├── GET /user/:id                  │
-│  └── GET /stats                     │
-│                                     │
-│  Worker: metrics ←── debugger ✦    │
-│  Worker: health-check ←── debugger ✦│
-└─────────────────────────────────────┘
-```
-
-The `authenticate()` function has a `debugger` statement that pauses on every login.
-
----
-
-## Feature 1: Basic Debugging
-
-### Trigger a pause
-
-```bash
-# From a terminal — this hangs because the server pauses
-curl -X POST http://localhost:4444/login \
-  -d '{"email":"alice@example.com","password":"secret"}'
-```
-
-### Agent inspects the pause
-
-```
-→ debugger_state {}
-```
+Add mypry to your agent's MCP config. **Claude Code** (`~/.claude/mcp.json`):
 
 ```json
 {
-  "status": "paused",
-  "file": "/path/to/examples/tutorial-server.cjs",
-  "line": 57,
-  "function": "authenticate",
-  "source_window": [
-    {"line": 54, "text": "  const user = users.find(u => u.email === email)", "current": false},
-    {"line": 55, "text": "  const isValid = user && password === 'secret'", "current": false},
-    {"line": 56, "text": "", "current": false},
-    {"line": 57, "text": "  debugger  // ← auth breakpoint", "current": true},
-    {"line": 58, "text": "", "current": false},
-    {"line": 59, "text": "  return isValid ? user : null", "current": false}
-  ],
-  "locals": {
-    "email": "alice@example.com",
-    "password": "secret",
-    "user": "Object",
-    "isValid": true
+  "mcpServers": {
+    "mypry": {
+      "command": "node",
+      "args": ["./node_modules/mypry/dist/mcp-bridge.js"],
+      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+    }
   }
 }
 ```
 
-In one call, the agent sees: where execution stopped, the source code, and all local variables.
+> **Cursor:** same block in `~/.cursor/mcp.json`.
+> **Antigravity:** same block (without the outer `mcpServers`) in `~/.gemini/config/mcp_config.json`.
+> Use an **absolute** path to `mcp-bridge.js` if your agent runs from another directory.
 
-### Evaluate expressions
-
-```
-→ debugger_eval {"expr": "user.role"}
-← {"ok": true, "type": "string", "value": "user"}
-
-→ debugger_eval {"expr": "users.filter(u => u.role === 'admin').length"}
-← {"ok": true, "type": "number", "value": 1}
-
-→ debugger_eval {"expr": "JSON.stringify(user)"}
-← {"ok": true, "value": "{\"id\":1,\"name\":\"Alice\",\"email\":\"alice@example.com\",\"role\":\"user\"}"}
-```
-
-Any valid JavaScript expression works — you have full access to the paused scope.
-
-### Step through code
-
-```
-→ debugger_step_over {}
-← {"status": "paused", "line": 59, "function": "authenticate", "locals": {...}}
-
-→ debugger_step_into {}
-← {"status": "paused", "line": 12, "function": "Array.find", ...}
-
-→ debugger_step_out {}
-← {"status": "paused", "line": 59, ...}
-```
-
-Each step returns the new state — no need to call `debugger_state` after.
-
-### Resume execution
-
-```
-→ debugger_continue {}
-← {"status": "running", "wait_timeout": true}
-```
-
-The paused curl request completes. `debugger_continue` **blocks** until the next breakpoint (30s timeout).
+Restart your agent. You now have the `debugger_*` tools available.
 
 ---
 
-## Feature 2: Conditional Breakpoints
+## Feature 1 — Basic interactive debugging
 
-**Problem:** The `debugger` statement pauses on every login.
-**Solution:** Set a breakpoint with a condition — only pause when it's true.
+Trigger the breakpoint. From any terminal:
 
-### Set a conditional breakpoint
+```bash
+curl -X POST localhost:4444/login -d '{"email":"alice@example.com","password":"secret"}'
+# (this request hangs — the server is paused at line 12)
+```
+
+Now the agent inspects. **In one call**, it sees where it stopped, the source, and every local:
+
+```
+→ debugger_state {}
+← {
+    "status": "paused",
+    "file": "server.js",
+    "line": 12,
+    "function": "authenticate",
+    "source_window": [
+      { "line": 10, "text": "  const user = users.find(u => u.email === email)" },
+      { "line": 11, "text": "  const isValid = user && password === 'secret'" },
+      { "line": 12, "text": "  debugger", "current": true },
+      { "line": 13, "text": "  return isValid ? user : null" }
+    ],
+    "locals": { "email": "alice@example.com", "password": "secret", "isValid": true }
+  }
+```
+
+Evaluate any JavaScript in the paused frame:
+
+```
+→ debugger_eval { "expr": "user.role" }
+← { "ok": true, "type": "string", "value": "user" }
+
+→ debugger_eval { "expr": "users.filter(u => u.role === 'admin').length" }
+← { "ok": true, "type": "number", "value": 1 }
+```
+
+Step through. Each step returns the new state — no follow-up `debugger_state` needed:
+
+```
+→ debugger_step_over {}
+← { "status": "paused", "line": 13, "function": "authenticate" }
+
+→ debugger_step_into {}
+← { "status": "paused", "function": "Array.find", ... }
+
+→ debugger_step_out {}
+← { "status": "paused", "line": 13, ... }
+```
+
+Resume. This is the one tool that **blocks** — it returns when the next breakpoint hits (30s timeout):
+
+```
+→ debugger_continue {}
+← { "status": "running" }
+```
+
+The hanging `curl` now completes.
+
+---
+
+## Feature 2 — Conditional breakpoints
+
+The `debugger` on line 12 fires on **every** login. To pause only for a specific case, set a conditional breakpoint instead.
 
 ```
 → debugger_set_breakpoint {
-    "file": "tutorial-server.cjs",
-    "line": 57,
-    "condition": "email === \"admin@example.com\""
+    "file": "server.js",
+    "line": 12,
+    "condition": "email === 'admin@example.com'"
   }
-← {"ok": true, "id": 1, "file": "tutorial-server.cjs", "line": 57, "condition": "email === \"admin@example.com\""}
+← { "ok": true, "id": 1 }
 ```
 
-### Test it
+Now test both:
 
 ```bash
-# Alice — NO pause (condition is false)
-curl -X POST http://localhost:4444/login -d '{"email":"alice@example.com","password":"secret"}'
-# → Instant response
+curl -X POST localhost:4444/login -d '{"email":"alice@example.com","password":"secret"}'
+# → instant response (condition false, no pause)
 
-# Admin — PAUSES (condition is true)
-curl -X POST http://localhost:4444/login -d '{"email":"admin@example.com","password":"secret"}'
-# → Hangs (paused)
+curl -X POST localhost:4444/login -d '{"email":"admin@example.com","password":"secret"}'
+# → hangs (condition true, paused)
 ```
 
 ```
 → debugger_state {}
-← {"status": "paused", "line": 57, "locals": {"email": "admin@example.com", "isValid": true}}
-```
+← { "status": "paused", "line": 12, "locals": { "email": "admin@example.com", "isValid": true } }
 
-### Manage breakpoints
-
-```
 → debugger_list_breakpoints {}
-← {"breakpoints": [{"id": 1, "file": "tutorial-server.cjs", "line": 57, "condition": "email === \"admin@example.com\""}]}
+← { "breakpoints": [ { "id": 1, "file": "server.js", "line": 12, "condition": "email === 'admin@example.com'" } ] }
 
-→ debugger_remove_breakpoint {"id": 1}
-← {"ok": true}
+→ debugger_continue {}
+→ debugger_remove_breakpoint { "id": 1 }
+← { "ok": true }
 ```
 
-### Condition expression examples
-
-| Condition | When it fires |
-|-----------|---------------|
-| `email === "admin@example.com"` | Specific user |
-| `isValid === false` | Failed login attempts |
-| `user?.role === "admin"` | Admin users only |
-| `requestCount > 100` | After 100 requests |
-| `password.length < 8` | Weak passwords |
+Useful conditions: `isValid === false` (failed logins), `user?.role === 'admin'`, `requestCount > 100`, `password.length < 8`.
 
 ---
 
-## Feature 3: Trace Mode (Non-Blocking Observation)
+## Feature 3 — Trace mode (non-blocking)
 
-**Problem:** You want to observe multiple logins without pausing the app.
-**Solution:** Trace mode auto-resumes breakpoints and silently collects snapshots.
-
-### Start tracing
+When you want to observe a *pattern* across many executions without freezing the app, use trace mode. mypry auto-resumes at each hit and silently records a snapshot.
 
 ```
-→ debugger_set_breakpoint {"file": "tutorial-server.cjs", "line": 57}
-← {"ok": true, "id": 2}
+→ debugger_set_breakpoint { "file": "server.js", "line": 12 }
+← { "ok": true, "id": 2 }
 
-→ debugger_trace_start {"maxBuffer": 100}
-← {"ok": true, "tracing": true, "maxBuffer": 100}
+→ debugger_trace_start { "maxBuffer": 100 }
+← { "ok": true, "tracing": true }
 ```
 
-The app is now running normally. Every time it hits line 57, mypry captures a snapshot and auto-resumes.
-
-### Trigger some logins
+The app keeps running. Trigger a few logins — **all return instantly**:
 
 ```bash
-curl -X POST http://localhost:4444/login -d '{"email":"alice@example.com","password":"secret"}'
-curl -X POST http://localhost:4444/login -d '{"email":"bob@example.com","password":"secret"}'
-curl -X POST http://localhost:4444/login -d '{"email":"admin@example.com","password":"wrong"}'
+curl -X POST localhost:4444/login -d '{"email":"alice@example.com","password":"secret"}'
+curl -X POST localhost:4444/login -d '{"email":"bob@example.com","password":"secret"}'
+curl -X POST localhost:4444/login -d '{"email":"admin@example.com","password":"wrong"}'
 ```
 
-All three return instantly — the server never paused.
-
-### Peek at the trace
+Peek without stopping, or stop and collect everything:
 
 ```
 → debugger_trace_status {}
@@ -261,328 +228,253 @@ All three return instantly — the server never paused.
     "tracing": true,
     "count": 3,
     "hits": [
-      {"timestamp": 1779919970886, "file": ".../tutorial-server.cjs", "line": 57, "function": "authenticate", "locals": {"email": "alice@example.com", "isValid": true}},
-      {"timestamp": 1779919971102, "file": ".../tutorial-server.cjs", "line": 57, "function": "authenticate", "locals": {"email": "bob@example.com", "isValid": true}},
-      {"timestamp": 1779919971340, "file": ".../tutorial-server.cjs", "line": 57, "function": "authenticate", "locals": {"email": "admin@example.com", "isValid": false}}
+      { "timestamp": 1779919970886, "line": 12, "function": "authenticate", "locals": { "email": "alice@example.com", "isValid": true } },
+      { "timestamp": 1779919971102, "line": 12, "function": "authenticate", "locals": { "email": "bob@example.com",   "isValid": true } },
+      { "timestamp": 1779919971340, "line": 12, "function": "authenticate", "locals": { "email": "admin@example.com", "isValid": false } }
     ]
   }
-```
 
-### Stop tracing and collect results
-
-```
 → debugger_trace_stop {}
-← {"ok": true, "tracing": false, "count": 3, "hits": [...]}
+← { "ok": true, "tracing": false, "count": 3, "hits": [ ... ] }
 ```
 
-### When to use trace vs. breakpoints
+The agent now has the full picture: who logged in, with what inputs, which ones failed — and the app never stopped serving.
 
-| Use | When |
-|-----|------|
-| **Breakpoints** | You need to pause and deeply inspect one execution |
-| **Trace mode** | You want to observe patterns across many executions |
-| **Conditional BP + Trace** | Collect only the interesting hits (e.g. failed logins) |
+> **Interactive vs trace:** breakpoints to inspect **one** execution deeply; trace to watch **many** without pausing. Combine them — a conditional breakpoint + trace collects only the interesting hits (e.g. just the failed logins).
 
 ---
 
-## Feature 4: Worker Thread Debugging
+## Feature 4 — Full-stack in one session
 
-### Discover workers
+This is what nothing else does: follow a single request from the **browser** into the **backend**, pausing on both sides, in one session.
+
+Start one daemon that owns both targets:
+
+```bash
+mypry serve --frontend http://localhost:5173
+```
+
+Every tool takes a `target`: `"frontend"` routes to Chrome, `"backend"` (default) routes to Node.
+
+```
+# 1. Frontend — pause as the request leaves the browser
+→ debugger_state { "target": "frontend" }
+← { "status": "paused", "function": "handleLogin", "file": "Login.vue",
+    "locals": { "body": "{\"email\":\"admin@example.com\",\"password\":\"secret\"}" } }
+
+→ debugger_eval { "target": "frontend", "expr": "authStore" }
+← { "ok": true, "value": { "token": null, "isAuthenticated": false } }
+                          ↑ Pinia $state auto-unwrapped
+
+→ debugger_continue { "target": "frontend" }    # request flies to the backend
+
+# 2. Backend — catch the SAME request (same daemon, no target = backend)
+→ debugger_state {}
+← { "status": "paused", "file": "auth.service.ts", "line": 151, "function": "validateUser" }
+                          ↑ source-mapped from dist/*.js
+
+→ debugger_eval { "expr": "user.role?.name" }
+← { "ok": true, "value": "viewer" }
+
+→ debugger_backtrace {}
+← { "frames": [ { "function": "validateUser", "file": "auth.service.ts", "line": 151 } ] }
+
+→ debugger_continue {}
+```
+
+The agent just diagnosed a bug that spans both sides — the frontend sent the right payload, but the backend resolved the wrong role — without ever leaving the conversation or switching tools.
+
+### Vue/Pinia state inspection
+
+When paused inside a Vue component, reactive state is auto-unwrapped:
+
+```
+→ debugger_eval { "target": "frontend", "expr": "authStore" }
+← { "ok": true, "value": { "token": null, "loading": false, "isAuthenticated": false } }
+                          ↑ Pinia $state auto-unwrapped
+
+→ debugger_eval { "target": "frontend", "expr": "devLoginLoading" }
+← { "ok": true, "value": "superadmin" }
+                          ↑ Vue ref() auto-unwrapped
+```
+
+No `.__v_raw`, no `.value`, no `.$state` — mypry handles it.
+
+---
+
+## Feature 5 — Worker threads
+
+Start the daemon and debug `worker_threads` alongside the main thread.
 
 ```
 → debugger_workers {}
-← {
-    "workers": [
-      {"sessionId": "1", "title": "[worker 1] WorkerThread", "url": ".../tutorial-server.cjs"},
-      {"sessionId": "2", "title": "[worker 2] WorkerThread", "url": ".../tutorial-server.cjs"}
-    ],
-    "count": 2
-  }
+← { "count": 2, "workers": [
+      { "sessionId": "1", "title": "[worker 1] metrics" },
+      { "sessionId": "2", "title": "[worker 2] health-check" }
+  ]}
+
+→ debugger_eval { "expr": "workerData.type", "worker": "1" }
+← { "ok": true, "value": "metrics" }
+
+→ debugger_eval { "expr": "queue.length", "worker": "1" }
+← { "ok": true, "value": 7 }
 ```
 
-### Eval in a specific worker
-
-```
-→ debugger_eval {"expr": "workerData.type", "worker": "1"}
-← {"ok": true, "value": "metrics"}
-
-→ debugger_eval {"expr": "workerData.type", "worker": "2"}
-← {"ok": true, "value": "health-check"}
-```
-
-The `worker` param routes the eval to that worker's scope.
+Workers share the parent session — no separate ports, no extra daemon. `mypry serve` enables `--workers` by default.
 
 ---
 
-## Feature 5: Backtrace and Source
+## Feature 6 — Force pause (no breakpoints)
 
-### Call stack
-
-```
-→ debugger_backtrace {}
-← {
-    "frames": [
-      {"function": "authenticate", "file": "tutorial-server.cjs", "line": 57},
-      {"function": "Server.<anonymous>", "file": "tutorial-server.cjs", "line": 68},
-      {"function": "emit", "file": "node:events", "line": 519}
-    ]
-  }
-```
-
-### Full source
-
-```
-→ debugger_source {}
-← {
-    "file": "tutorial-server.cjs",
-    "current_line": 57,
-    "source": "const http = require('http')\n..."
-  }
-```
-
----
-
-## Feature 6: Force Pause
-
-Your app is running and you need to inspect it NOW — without any breakpoints or debugger statements.
+The app is running and you need to inspect it **now** — stuck process, slow request, memory leak.
 
 ```
 → debugger_pause {}
-← {"status": "paused", "file": "node:internal/timers", "line": 527, "function": "processTimers", ...}
+← { "status": "paused", "file": "node:internal/timers", "function": "processTimers" }
+
+→ debugger_eval { "expr": "process.memoryUsage().heapUsed / 1e6" }
+← { "ok": true, "value": 184.2 }
+
+→ debugger_continue {}
 ```
 
-Pauses wherever execution happens to be. Useful for inspecting stuck or slow processes.
+Pauses wherever execution happens to be — no `debugger` statement required.
 
 ---
 
-## Feature 7: Source Map Resolution (TypeScript)
+## Feature 7 — Source maps
 
-mypry automatically resolves source maps. If your project compiles TypeScript to JavaScript (NestJS, Next.js, etc.), the debugger shows the **original .ts file** and line numbers, not the compiled `dist/*.js`.
-
-This applies to **all three ops**: `state`, `backtrace`, and `source`.
-
-### Example: NestJS auth service
+If your project compiles TypeScript (NestJS, Next.js) or serves Vue through Vite, `state`, `backtrace`, and `source` show your **original** file and line — never the compiled `dist/*.js`. Without this, an agent gets `dist/auth/auth.service.js:136` and can't propose a real code edit.
 
 ```
 → debugger_state {}
-← {
-    "status": "paused",
-    "file": "/project/src/auth/auth.service.ts",    ← original TypeScript
-    "line": 151,                                      ← correct .ts line number
-    ...
-  }
+← { "file": "src/auth/auth.service.ts", "line": 151, ... }   # not dist/*.js
 
 → debugger_backtrace {}
-← {"frames": [{"function": "validateUser", "file": ".../src/auth/auth.service.ts", "line": 151}]}
-                                                       ↑ source-mapped, not dist/*.js
+← { "frames": [{ "function": "validateUser", "file": "src/auth/auth.service.ts", "line": 151 }] }
+                                                                ↑ source-mapped
 ```
 
-### Frontend source maps (Vite)
-
-Vite dev server URLs are automatically resolved:
+Frontend Vite URLs are also resolved:
 ```
 http://localhost:3001/src/auth/Login.vue?t=12345  →  src/auth/Login.vue
 ```
 
-Without source maps, the same pause would show `dist/auth/auth.service.js:136` with compiled JavaScript — useless for an agent trying to propose code edits.
-
-**Requirements:** 
-- Backend: `"sourceMap": true` in `tsconfig.json`, `.js.map` files alongside compiled `.js`
-- Frontend: Vite dev mode generates inline source maps automatically
+**Requirements:** backend needs `"sourceMap": true` in `tsconfig.json` (and `.js.map` files alongside the compiled output). Vite dev mode emits inline maps automatically, so frontend works out of the box.
 
 ---
 
-## Feature 8: Frontend Debugging (Chrome CDP)
+## Feature 8 — Project config (`.mypry.json`)
 
-mypry connects to Chrome's DevTools Protocol for frontend debugging — same tools, same API.
+Drop a `.mypry.json` in your project root and `mypry serve` picks it up — zero flags needed.
 
-### Setup: unified daemon
+```json
+{
+  "port": 3098,
+  "inspect": 9229,
+  "frontend": "http://localhost:3001"
+}
+```
 
 ```bash
-# One daemon handles both backend (:9229) and Chrome (:9222)
-mypry serve --frontend http://localhost:3001
+cd ~/my-project
+mypry serve            # reads .mypry.json, launches Chrome, connects both
 ```
 
-Use `target: "frontend"` on any tool to route to Chrome. Default is backend.
-
-### Global eval (no pause needed)
-
-When the process is running, `debugger_eval` uses `Runtime.evaluate` for global scope access:
-
-```
-→ debugger_eval {target: "frontend", expr: "document.title"}
-← {"ok": true, "value": "ServiceHub"}
-
-→ debugger_eval {target: "frontend", expr: "window.location.href"}
-← {"ok": true, "value": "http://localhost:3001/login"}
-```
-
-### Vue/Pinia: pause in component, inspect reactive state
-
-```
-→ debugger_state {target: "frontend"}
-← {"status": "paused", "function": "handleDevLogin", "file": "Login.vue"}
-
-→ debugger_eval {target: "frontend", expr: "authStore"}
-← {"ok": true, "value": {"token": null, "loading": false, "isAuthenticated": false}}
-                          ↑ Pinia $state auto-unwrapped!
-
-→ debugger_eval {target: "frontend", expr: "devLoginLoading"}
-← {"ok": true, "value": "superadmin"}
-                          ↑ Vue ref() auto-unwrapped!
-```
-
-### Catch a login request with XHR interceptor
-
-```
-→ debugger_eval {target: "frontend", expr: "...XHR.send override with debugger..."}
-← {"ok": true, "value": "interceptor installed"}
-
-→ debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
-(page pauses at XMLHttpRequest.send)
-
-→ debugger_state {target: "frontend"}
-← {"status": "paused", "function": "XMLHttpRequest.send",
-   "locals": {"body": "{\"emailAddress\":\"admin@test.com\",\"password\":\"secret\"}"}}
-
-→ debugger_continue {target: "frontend"}
-```
+CLI flags always override the config file. Supported keys: `port`, `inspect`, `frontend`, `token`, `host`, `workers`.
 
 ---
 
-## Agent Workflow Patterns
+## Feature 9 — Live monitor (`mypry watch`)
 
-### Pattern 1: Debug a specific request
+Open a second terminal to see what your agent is doing:
+
+```bash
+mypry watch
+```
 
 ```
-1. debugger_set_breakpoint {file: "auth.service.ts", line: 151, condition: "email === 'admin@test.com'"}
+10:21:03 → frontend eval expr="document.title"
+10:21:03 ← frontend = "ServiceHub"
+10:21:04 → backend  state
+10:21:04 ← backend  running
+10:21:05 ⏸  paused at validateUser auth.service.ts:151
+            locals: emailAddress="admin@test.com", isMatch=true
+10:21:06 ▶  resumed
+```
+
+Color-coded, timestamped, shows `frontend` vs `backend`. Connects to the daemon's SSE stream — read-only, zero overhead.
+
+---
+
+## Agent workflow patterns
+
+### Debug one specific request
+
+```
+1. debugger_set_breakpoint { file: "auth.service.ts", line: 151, condition: "email === 'admin@example.com'" }
 2. (trigger the request)
-3. debugger_state {}                     → see where we paused
-4. debugger_eval {expr: "user"}          → inspect the user object
-5. debugger_eval {expr: "req.headers"}   → check request headers
-6. debugger_step_over {}                 → next line
-7. debugger_eval {expr: "result"}        → see the result
-8. debugger_continue {}                  → resume
-9. debugger_remove_breakpoint {id: 1}    → cleanup
+3. debugger_state {}                     → where we paused
+4. debugger_eval { expr: "user" }        → inspect
+5. debugger_step_over {}                 → next line
+6. debugger_eval { expr: "result" }      → see the result
+7. debugger_continue {}
+8. debugger_remove_breakpoint { id: 1 }
 ```
 
-### Pattern 2: Observe a flow across many requests
+### Observe a flow across many requests
 
 ```
-1. debugger_set_breakpoint {file: "handler.ts", line: 42}
-2. debugger_trace_start {maxBuffer: 50}
-3. (run tests, trigger actions, wait)
-4. debugger_trace_stop {}                → get all hits with locals
-5. (analyze: which requests failed? what were the inputs?)
-6. debugger_remove_breakpoint {id: 1}
+1. debugger_set_breakpoint { file: "handler.ts", line: 42 }
+2. debugger_trace_start { maxBuffer: 50 }
+3. (run your test suite / hit the endpoint repeatedly)
+4. debugger_trace_stop {}                → all hits with locals; analyze the pattern
+5. debugger_remove_breakpoint { id: 1 }
 ```
 
-### Pattern 3: Investigate a worker thread
+### Frontend → backend handoff
 
 ```
-1. debugger_workers {}                   → find worker IDs
-2. debugger_eval {expr: "state", worker: "1"}
-3. debugger_eval {expr: "queue.length", worker: "1"}
+1. debugger_state    { target: "frontend" }   → paused as the request leaves the browser
+2. debugger_eval     { target: "frontend", expr: "JSON.parse(body)" }
+3. debugger_continue { target: "frontend" }    → request flies to the backend
+4. debugger_state    {}                        → paused in the backend handler
+5. debugger_eval     { expr: "user.role" }
+6. debugger_continue {}
 ```
 
-### Pattern 4: Live inspection (no breakpoints)
+### Live inspection of a stuck process
 
 ```
-1. debugger_pause {}                     → freeze the process
-2. debugger_state {}                     → see where we are
-3. debugger_eval {expr: "process.memoryUsage()"}
-4. debugger_eval {expr: "global.connectionPool.size"}
-5. debugger_continue {}                  → resume
-```
-
-### Pattern 5: Frontend → Backend handoff (ONE daemon, `target` param)
-
-```bash
-# Setup: single daemon
-mypry serve --frontend http://localhost:3001
-```
-
-```
-# Frontend: intercept the API call
-1. debugger_eval {target: "frontend", expr: "install XHR interceptor with debugger;"}
-2. debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
-   → page pauses at XMLHttpRequest.send
-3. debugger_state {target: "frontend"}   → paused, locals: {body: '{"email":"..."}'}
-4. debugger_eval {target: "frontend", expr: "JSON.parse(body)"}
-5. debugger_continue {target: "frontend"} → request flies to backend
-
-# Backend: catch the same request (same daemon, no target = backend default)
-6. debugger_state {}                     → paused at auth.service.ts:151 (source-mapped!)
-7. debugger_eval {expr: "user.role?.name"} → "Superadmin"
-8. debugger_backtrace {}                 → auth.service.ts:151 (source-mapped!)
-9. debugger_continue {}
+1. debugger_pause {}
+2. debugger_state {}
+3. debugger_eval { expr: "global.connectionPool.size" }
+4. debugger_continue {}
 ```
 
 ---
 
-## MCP Tools Quick Reference
+## MCP tools quick reference
+
+All tools accept an optional `target` (`"frontend"` / `"backend"`, default backend) and `worker`.
 
 | Tool | Params | Blocks? | Description |
-|------|--------|---------|-------------|
-| `debugger_state` | — | No | Current pause: file, line, function, locals, source |
-| `debugger_eval` | `expr`, `worker?` | No | Evaluate JS — paused: frame scope; running: global scope |
-| `debugger_continue` | — | **Yes** | Resume until next breakpoint (30s timeout) |
-| `debugger_step_over` | — | No | Next line, returns new state |
-| `debugger_step_into` | — | No | Enter function, returns new state |
-| `debugger_step_out` | — | No | Exit function, returns new state |
-| `debugger_pause` | — | No | Force-pause a running process |
-| `debugger_set_breakpoint` | `file`, `line`, `condition?` | No | Set BP (optional condition) |
-| `debugger_remove_breakpoint` | `id` | No | Remove BP by ID |
-| `debugger_list_breakpoints` | — | No | List all active BPs |
-| `debugger_backtrace` | — | No | Call stack (source-mapped to .ts) |
-| `debugger_source` | `file?` | No | Source of current file (source-mapped) |
-| `debugger_trace_start` | `maxBuffer?` | No | Start trace (auto-resume) |
-| `debugger_trace_stop` | — | No | Stop trace, return hits |
-| `debugger_trace_status` | — | No | Peek at trace buffer |
-| `debugger_workers` | — | No | List worker threads |
+|------|--------|:------:|-------------|
+| `debugger_state` | — | no | Pause location, source window, locals |
+| `debugger_eval` | `expr` | no | Evaluate JS — paused: frame scope; running: global scope |
+| `debugger_continue` | — | **yes** | Resume until next breakpoint (30s timeout) |
+| `debugger_step_over` | — | no | Next line, returns new state |
+| `debugger_step_into` | — | no | Enter function, returns new state |
+| `debugger_step_out` | — | no | Exit function, returns new state |
+| `debugger_pause` | — | no | Force-pause a running process |
+| `debugger_set_breakpoint` | `file`, `line`, `condition?` | no | Set a breakpoint (optionally conditional) |
+| `debugger_remove_breakpoint` | `id` | no | Remove a breakpoint |
+| `debugger_list_breakpoints` | — | no | List active breakpoints |
+| `debugger_backtrace` | — | no | Call stack (source-mapped) |
+| `debugger_source` | `file?` | no | Full source of the current file (source-mapped) |
+| `debugger_trace_start` | `maxBuffer?` | no | Start non-blocking trace mode |
+| `debugger_trace_stop` | — | no | Stop trace, return all hits |
+| `debugger_trace_status` | — | no | Peek at the trace buffer |
+| `debugger_workers` | — | no | List worker-thread sessions |
 
-> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry serve --frontend`.
-
----
-
-## HTTP API (for non-MCP agents)
-
-Everything above works via HTTP too. The MCP bridge is just a proxy:
-
-```bash
-# State
-curl http://localhost:3098/command -d '{"op":"state"}'
-
-# Eval
-curl http://localhost:3098/command -d '{"op":"eval","expr":"user.role"}'
-
-# Continue (blocking)
-curl http://localhost:3098/command -d '{"op":"continue","wait":true}'
-
-# Set conditional breakpoint
-curl http://localhost:3098/command -d '{"op":"set_breakpoint","file":"auth.ts","line":42,"condition":"role===\"admin\""}'
-
-# Trace
-curl http://localhost:3098/command -d '{"op":"trace_start","maxBuffer":50}'
-curl http://localhost:3098/command -d '{"op":"trace_stop"}'
-
-# Workers
-curl http://localhost:3098/command -d '{"op":"workers"}'
-```
-
-For Aurora TUI, prefix with `/api/debugger`:
-```bash
-curl http://localhost:3099/api/debugger/command -d '{"op":"state"}'
-```
-
----
-
-## Web UI
-
-A ready-to-use web debugger is included at `examples/web-debugger.html`:
-
-```bash
-open examples/web-debugger.html
-```
-
-It connects to the same HTTP API and provides: source view, locals panel, call stack, breakpoint management, step/continue controls, eval bar, and live SSE updates. Use it as a starting point for custom debugger UIs.
+That's every feature. For the API reference, HTTP endpoints, and the programmatic core, see the [README](README.md).
