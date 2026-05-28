@@ -7,6 +7,8 @@
 
 import type { DebuggerSession } from './session.js'
 import { resolveOriginalPosition, readOriginalSource } from './sourcemap.js'
+import { existsSync } from 'node:fs'
+import { resolve as pathResolve } from 'node:path'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -33,7 +35,45 @@ export interface RunningSnapshot {
 export type Snapshot = PausedSnapshot | RunningSnapshot
 
 export function cleanUrl(u: string | undefined): string {
-  return (u || '').replace(/^file:\/\//, '')
+  if (!u) return ''
+
+  // Strip file:// protocol
+  let cleaned = u.replace(/^file:\/\//, '')
+
+  // Handle Vite dev server URLs: http://localhost:PORT/src/... → /PROJECT_ROOT/src/...
+  // These appear when debugging Chrome with Vite running
+  const viteMatch = cleaned.match(/^https?:\/\/localhost:\d+\/(.+)/)
+  if (viteMatch) {
+    // Strip query params (?t=timestamp from HMR, ?v=hash from deps)
+    cleaned = viteMatch[1].replace(/\?.*$/, '')
+
+    // For source files (src/..., not node_modules), try to resolve to filesystem
+    // The Vite root is the cwd of the server
+    if (!cleaned.startsWith('/')) {
+      // Try candidate roots — check if the file exists on disk
+      // Vite serves files relative to its project root
+      const candidates = [
+        process.cwd(),
+        process.env.VITE_ROOT || '',
+        // Common patterns: search parent dirs for the file
+      ]
+
+      // Also try to find the file by walking up from cwd
+      let dir = process.cwd()
+      for (let i = 0; i < 5; i++) {
+        candidates.push(dir)
+        dir = pathResolve(dir, '..')
+      }
+
+      for (const root of candidates) {
+        if (!root) continue
+        const candidate = pathResolve(root, cleaned)
+        if (existsSync(candidate)) return candidate
+      }
+    }
+  }
+
+  return cleaned
 }
 
 export function formatValue(v: unknown): string {
