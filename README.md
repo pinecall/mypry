@@ -398,6 +398,14 @@ await session.resume()
 
 ## CLI reference
 
+| Command | Who it's for | What it does |
+|---------|:---:|-------------|
+| `mypry serve` | 🤖 Agents | HTTP daemon — exposes the API that agents connect to |
+| `mypry watch` | 👀 You | Read-only monitor — see what the agent is doing in realtime |
+| `mypry attach` | 🧑‍💻 You | Interactive REPL — type expressions, step manually (like `pry` in Ruby) |
+| `mypry open` | 🌐 Setup | Launch Chrome with `--remote-debugging-port` for frontend debugging |
+| `mypry inject` | 🔧 Setup | Send `SIGUSR1` to a running process to enable `--inspect` |
+
 ```
 mypry — the interactive full-stack debugger for AI agents
 
