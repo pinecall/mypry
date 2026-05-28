@@ -219,8 +219,47 @@ export class DebuggerSession {
       }
     }
 
-    // Fallback: direct regex match (works for .js files and Vite/ESM where URLs match)
+    // Fallback: try to match scripts by filename and resolve source maps
     const escaped = filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const basename = filePattern.replace(/^.*[/\\]/, '')
+
+    // Search loaded scripts for a matching URL
+    let matchedScriptId: string | null = null
+    let matchedEntry: ScriptEntry | null = null
+    for (const [scriptId, entry] of this.scripts) {
+      if (!entry.url) continue
+      const urlPath = entry.url.replace(/\?.*$/, '') // strip query params (Vite ?t=xxx)
+      const urlBasename = urlPath.replace(/^.*[/\\]/, '')
+      if (urlBasename === basename || urlPath.endsWith('/' + filePattern)) {
+        matchedScriptId = scriptId
+        matchedEntry = entry
+        break
+      }
+    }
+
+    // If we found a matching script with a source map, resolve the line number
+    if (matchedScriptId && matchedEntry?.sourceMapURL) {
+      let resolvedLine = lineNumber
+      try {
+        const mapped = await this._resolveInlineSourceMap(matchedEntry, filePattern, lineNumber)
+        if (mapped != null) resolvedLine = mapped.line
+      } catch { /* use original line */ }
+
+      // Use setBreakpointByUrl with the script's URL and resolved line
+      // setBreakpointByUrl is more forgiving than setBreakpoint — Chrome snaps to nearest valid location
+      const scriptUrl = matchedEntry.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const bpParams: Record<string, unknown> = {
+        lineNumber: resolvedLine,
+        urlRegex: scriptUrl,
+      }
+      if (condition) bpParams.condition = condition
+      const sr = await this.cdp.send('Debugger.setBreakpointByUrl', bpParams) as any
+      const id = ++this._nextBpId
+      this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+      return id
+    }
+
+    // No source map — use urlRegex directly (plain .js files)
     const params: Record<string, unknown> = {
       lineNumber,
       urlRegex: escaped,
@@ -232,6 +271,62 @@ export class DebuggerSession {
     return id
   }
 
+  /**
+   * Resolve a source line → generated line using a script's inline source map.
+   * Handles Vite/Webpack transforms (JSX → _jsxDEV, etc.) that shift line numbers.
+   */
+  private async _resolveInlineSourceMap(
+    entry: ScriptEntry,
+    filePattern: string,
+    sourceLine0: number, // 0-based
+  ): Promise<{ line: number; column: number } | null> {
+    if (!entry.sourceMapURL) return null
+
+    let mapContent: string | null = null
+
+    if (entry.sourceMapURL.startsWith('data:')) {
+      const b64 = entry.sourceMapURL.split(',')[1]
+      if (!b64) return null
+      mapContent = Buffer.from(b64, 'base64').toString()
+    } else {
+      // For non-inline maps, try fetching via CDP
+      try {
+        const { readFileSync } = await import('fs')
+        const { resolve, dirname } = await import('path')
+        let scriptPath = entry.url.replace(/^file:\/\//, '').replace(/\?.*$/, '')
+        if (process.platform === 'win32' && scriptPath.startsWith('/'))
+          scriptPath = scriptPath.slice(1)
+        const mapPath = resolve(dirname(scriptPath), entry.sourceMapURL)
+        mapContent = readFileSync(mapPath, 'utf8')
+      } catch { return null }
+    }
+
+    if (!mapContent) return null
+
+    const rawMap = JSON.parse(mapContent)
+    const sources: string[] = rawMap.sources || []
+    const basename = filePattern.replace(/^.*[/\\]/, '')
+
+    const matchIdx = sources.findIndex((s: string) => {
+      const sBasename = s.replace(/^.*[/\\]/, '')
+      return sBasename === basename || s.endsWith(filePattern) || filePattern.endsWith(s)
+    })
+    if (matchIdx === -1) return null
+
+    const { SourceMapConsumer } = await import('source-map')
+    const consumer = await new SourceMapConsumer(rawMap)
+    try {
+      const gen = consumer.generatedPositionFor({
+        source: sources[matchIdx],
+        line: sourceLine0 + 1, // source-map lib uses 1-based
+        column: 0,
+      })
+      if (gen.line != null) return { line: gen.line - 1, column: gen.column ?? 0 } // back to 0-based
+    } finally {
+      consumer.destroy()
+    }
+    return null
+  }
   /**
    * Resolve a TypeScript breakpoint to compiled JS coordinates.
    * Finds the .js script whose source map references our .ts file,
