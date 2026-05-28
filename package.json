@@ -1,6 +1,6 @@
 {
   "name": "mypry",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "The interactive full-stack debugger for AI agents — pause, step, and inspect across Node.js and Chrome via MCP",
   "author": "Pinecall",
   "license": "MIT",
@@ -69,7 +69,8 @@
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "npm run test:suite",
-    "test:suite": "tsc -p tsconfig.test.json && node --test dist-test/test/ndjson-contract.test.js"
+    "test:suite": "tsc -p tsconfig.test.json && node --test dist-test/test/ndjson-contract.test.js",
+    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/test/fullstack-integration.test.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

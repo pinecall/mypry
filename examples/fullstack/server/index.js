@@ -105,7 +105,7 @@ app.post('/__pry__', (req, res) => {
   res.json({ ok: true })
 })
 
-const PORT = 3456
+const PORT = parseInt(process.env.PORT || '3456')
 app.listen(PORT, () => {
   console.log()
   console.log('  🔮 mypry fullstack example — Express API')
