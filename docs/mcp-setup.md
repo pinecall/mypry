@@ -3,13 +3,25 @@
 Connect your AI agent to mypry. The architecture: a **stateless MCP bridge** on stdio talks to the **mypry daemon** over HTTP. The daemon owns the CDP connection to your app.
 
 ```
-Agent ── stdio ──▶ mcp-bridge.js ── HTTP ──▶ mypry daemon ── CDP ──▶ your app
-                   (starts instantly)         (mypry serve)
+Agent ── stdio ──▶ mypry-bridge ── HTTP ──▶ mypry daemon ── CDP ──▶ your app
+                   (starts instantly)        (mypry serve)
 ```
 
 ---
 
-## Step 1: Start the daemon
+## Step 1: Install
+
+```bash
+npm install -g mypry
+```
+
+This gives you two commands:
+- `mypry` — CLI (daemon, watch, attach, inject)
+- `mypry-bridge` — MCP bridge (what your agent runs)
+
+---
+
+## Step 2: Start the daemon
 
 ```bash
 mypry serve                                          # backend only
@@ -20,7 +32,7 @@ Or use a [`.mypry.json`](../README.md#project-config-mypryconfig) in your projec
 
 ---
 
-## Step 2: Configure your agent
+## Step 3: Configure your agent
 
 ### Claude Code
 
@@ -30,9 +42,7 @@ Or use a [`.mypry.json`](../README.md#project-config-mypryconfig) in your projec
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["/absolute/path/to/mypry/dist/mcp-bridge.js"],
-      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+      "command": "mypry-bridge"
     }
   }
 }
@@ -49,14 +59,25 @@ Or use a [`.mypry.json`](../README.md#project-config-mypryconfig) in your projec
 ```json
 {
   "mypry": {
-    "command": "/path/to/node",
-    "args": ["/absolute/path/to/mypry/dist/mcp-bridge.js"],
-    "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+    "command": "mypry-bridge"
   }
 }
 ```
 
-> Antigravity may need the full path to `node` (e.g. from `which node`).
+### Project-local install (no global)
+
+If you prefer `npm install mypry` (local), use `npx`:
+
+```json
+{
+  "mcpServers": {
+    "mypry": {
+      "command": "npx",
+      "args": ["mypry-bridge"]
+    }
+  }
+}
+```
 
 ### Codex / OpenAI
 
@@ -75,14 +96,33 @@ See [`docs/http-api.md`](http-api.md) for the full reference.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MYPRY_URL` | `http://127.0.0.1:3098` | Daemon URL. Change for remote servers or custom ports. |
-
-Examples:
+| `MYPRY_URL` | `http://127.0.0.1:3098` | Daemon URL. Only set when using a custom port or remote server. |
 
 ```bash
-MYPRY_URL=http://127.0.0.1:3098              # default
-MYPRY_URL=http://127.0.0.1:3099/api/debugger # Aurora TUI
-MYPRY_URL=http://staging-server:3098          # remote server
+# Default — no env needed
+mypry-bridge
+
+# Custom port
+MYPRY_URL=http://127.0.0.1:3099
+
+# Aurora TUI
+MYPRY_URL=http://127.0.0.1:3099/api/debugger
+
+# Remote server (via SSH tunnel)
+MYPRY_URL=http://127.0.0.1:3099
+```
+
+For remote, add the env to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "mypry": {
+      "command": "mypry-bridge",
+      "env": { "MYPRY_URL": "http://127.0.0.1:3099" }
+    }
+  }
+}
 ```
 
 ---
@@ -98,8 +138,8 @@ You: What debugger tools do you have?
 It should list `debugger_state`, `debugger_eval`, etc. If not:
 
 1. Is the daemon running? → `curl http://localhost:3098/health`
-2. Is the bridge path correct? → Check `args` in your MCP config
-3. Is Node found? → Antigravity may need the absolute path
+2. Is `mypry-bridge` on PATH? → `which mypry-bridge`
+3. Agent can't find it? → use `npx mypry-bridge` or the full path
 
 ---
 

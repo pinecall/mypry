@@ -42,8 +42,7 @@ Point the MCP bridge at the remote daemon:
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["/path/to/mypry/dist/mcp-bridge.js"],
+      "command": "mypry-bridge",
       "env": { "MYPRY_URL": "http://staging-server:3098" }
     }
   }
@@ -213,9 +212,7 @@ On your machine, the MCP bridge connects to `localhost:3098` as if it were local
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["/path/to/mypry/dist/mcp-bridge.js"],
-      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+      "command": "mypry-bridge"
     }
   }
 }

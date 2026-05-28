@@ -51,9 +51,7 @@ mypry serve                     # HTTP daemon on :3098
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["./node_modules/mypry/dist/mcp-bridge.js"],
-      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+      "command": "mypry-bridge"
     }
   }
 }
@@ -272,9 +270,7 @@ mypry serve --port 3099 --inspect 9230               # custom ports
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["./node_modules/mypry/dist/mcp-bridge.js"],
-      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+      "command": "mypry-bridge"
     }
   }
 }
@@ -287,14 +283,16 @@ mypry serve --port 3099 --inspect 9230               # custom ports
 ```json
 {
   "mypry": {
-    "command": "node",
-    "args": ["./node_modules/mypry/dist/mcp-bridge.js"],
-    "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+    "command": "mypry-bridge"
   }
 }
 ```
 
-> Use an **absolute** path to `mcp-bridge.js` if your agent launches from a different working directory.
+> **Install:** `npm install -g mypry` makes `mypry-bridge` available globally.
+> For project-local installs, use `npx mypry-bridge` as the command instead.
+>
+> **Remote:** Override the daemon URL with `"env": { "MYPRY_URL": "http://staging:3099" }`.
+> The default is `http://127.0.0.1:3098` — no env needed for local use.
 
 ### MCP tools
 
@@ -336,6 +334,13 @@ mypry watch
 ```
 
 Color-coded, timestamped, shows `frontend` vs `backend`. Connects to the daemon's SSE stream — read-only, zero overhead.
+
+```bash
+mypry watch                                # local daemon (default :3098)
+mypry watch --port 3099                    # custom port
+mypry watch --host staging --port 3099     # remote daemon (via SSH tunnel or open port)
+mypry watch --token s3cr3t                 # with auth
+```
 
 ---
 

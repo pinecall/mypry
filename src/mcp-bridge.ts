@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * MCP Bridge — stateless proxy to mypry HTTP daemon.
  *

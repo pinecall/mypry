@@ -83,9 +83,7 @@ Add mypry to your agent's MCP config. **Claude Code** (`~/.claude/mcp.json`):
 {
   "mcpServers": {
     "mypry": {
-      "command": "node",
-      "args": ["./node_modules/mypry/dist/mcp-bridge.js"],
-      "env": { "MYPRY_URL": "http://127.0.0.1:3098" }
+      "command": "mypry-bridge"
     }
   }
 }
@@ -93,7 +91,7 @@ Add mypry to your agent's MCP config. **Claude Code** (`~/.claude/mcp.json`):
 
 > **Cursor:** same block in `~/.cursor/mcp.json`.
 > **Antigravity:** same block (without the outer `mcpServers`) in `~/.gemini/config/mcp_config.json`.
-> Use an **absolute** path to `mcp-bridge.js` if your agent runs from another directory.
+> **Install:** `npm install -g mypry` makes `mypry-bridge` available. Or use `npx mypry-bridge` as the command.
 
 Restart your agent. You now have the `debugger_*` tools available.
 
@@ -425,7 +423,14 @@ ssh -L 3099:localhost:3099 -i ~/.ssh/key user@staging-server
 Configure your agent's MCP bridge to point at the tunnel:
 
 ```json
-{ "env": { "MYPRY_URL": "http://127.0.0.1:3099" } }
+{
+  "mcpServers": {
+    "mypry": {
+      "command": "mypry-bridge",
+      "env": { "MYPRY_URL": "http://127.0.0.1:3099" }
+    }
+  }
+}
 ```
 
 ### Real session (tested against GCP)

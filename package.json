@@ -6,7 +6,8 @@
   "main": "./lib/pry.cjs",
   "types": "./dist/pry.d.ts",
   "bin": {
-    "mypry": "./bin/mypry"
+    "mypry": "./bin/mypry",
+    "mypry-bridge": "./dist/mcp-bridge.js"
   },
   "exports": {
     ".": {

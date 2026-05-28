@@ -203,7 +203,8 @@ async function main(): Promise<void> {
 
   if (positionals[0] === 'watch') {
     const httpPort = values.http ? parseInt(values.http, 10) : (values.port !== '9229' ? parseInt(values.port!, 10) : 3098)
-    const baseUrl = `http://127.0.0.1:${httpPort}`
+    const watchHost = values.host || '127.0.0.1'
+    const baseUrl = `http://${watchHost}:${httpPort}`
     const headers: Record<string, string> = {}
     if (values.token) headers['Authorization'] = `Bearer ${values.token}`
 
