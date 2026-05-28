@@ -187,8 +187,10 @@ export async function startHttpServer(
           targetSession = ws.session
         }
         opts.pairChannel?.emit('agent-action', body)
+        pushSSE('op', { op: body.op, target: body.target || 'backend', params: body })
         let result = await executeOp(targetSession, body.op, body)
         opts.pairChannel?.emit('agent-result', { op: body.op, result })
+        pushSSE('op-result', { op: body.op, target: body.target || 'backend', result })
 
         // Inject worker data (executeOp doesn't have workerSessions context)
         if (body.op === 'workers' && result._needs_context && opts.workerSessions) {

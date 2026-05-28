@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     options: {
       host: { type: 'string', default: '127.0.0.1' },
       port: { type: 'string', default: '9229' },
+      inspect: { type: 'string' },            // backend inspector port (serve mode)
       url:  { type: 'string' },
       json: { type: 'boolean', default: false },
       mcp:  { type: 'boolean', default: false },
@@ -88,39 +89,221 @@ async function main(): Promise<void> {
       tab: { type: 'string' },
       'tab-url': { type: 'string' },
       chrome: { type: 'boolean', default: false },
+      frontend: { type: 'string' },           // --frontend URL (cleaner --chrome)
       workers: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: true,
   })
 
+  // ── `mypry serve` normalisation ──
+  // `serve` = HTTP daemon for agents. Clean, opinionated defaults.
+  const isServe = positionals[0] === 'serve'
+
+  if (isServe) {
+    values['http-only'] = true
+    values.workers = true
+
+    // --port in serve mode = HTTP port (default 3098), not inspector port
+    // --inspect in serve mode = backend inspector port (default 9229)
+    if (!values.http) {
+      values.http = values.port !== '9229' ? values.port : '3098'
+    }
+    if (values.inspect) {
+      values.port = values.inspect
+    } else {
+      values.port = '9229'
+    }
+
+    // Positional URL or --frontend URL → enable Chrome
+    const frontendUrl = values.frontend || positionals.find(p =>
+      p.startsWith('http://') || p.startsWith('https://') || p.startsWith('localhost')
+    )
+    if (frontendUrl) {
+      values.chrome = true
+      // Store the URL for later use
+      ;(values as any)._frontendUrl = frontendUrl.startsWith('http') ? frontendUrl : `http://${frontendUrl}`
+    }
+  }
+
+  // --frontend URL (new flag, works in any mode)
+  if (values.frontend && !isServe) {
+    values.chrome = true
+    ;(values as any)._frontendUrl = values.frontend.startsWith('http') ? values.frontend : `http://${values.frontend}`
+  }
+
   if (values.help || positionals[0] === 'help') {
     process.stdout.write(
       `mypry - inline debugger for Node.js and the browser\n\n` +
       `Commands:\n` +
-      `  mypry attach [options]   Attach to a running process\n` +
-      `  mypry open [URL]         Launch Chrome with debugger port\n` +
-      `  mypry inject <PID>       Enable inspector on a running Node.js process\n\n` +
-      `Attach options:\n` +
-      `  --port PORT        V8 inspector port (default: 9229)\n` +
-      `  --host HOST        Inspector host (default: 127.0.0.1)\n` +
-      `  --url WS_URL       Direct WebSocket URL\n\n` +
-      `  --json             ndjson stdio transport\n` +
-      `  --mcp              MCP server on stdio\n` +
-      `  --http[=PORT]      HTTP API server (default: 3099)\n` +
-      `  --http-only        HTTP only, no stdio transport\n` +
-      `  --token TOKEN      Bearer token for HTTP auth\n` +
-      `  --chrome           Also launch Chrome for frontend debugging\n\n` +
+      `  mypry serve [options]   HTTP daemon for AI agents (recommended)\n` +
+      `  mypry attach [options]  Interactive REPL debugger\n` +
+      `  mypry watch [--port]    Monitor agent activity in realtime\n` +
+      `  mypry open [URL]        Launch Chrome with debugger port\n` +
+      `  mypry inject <PID>      Enable inspector on a running Node.js process\n\n` +
+      `Serve options (daemon mode):\n` +
+      `  --port PORT             HTTP API port (default: 3098)\n` +
+      `  --inspect PORT          Backend inspector port (default: 9229)\n` +
+      `  --frontend URL          Also connect Chrome for fullstack debugging\n` +
+      `  --token TOKEN           Bearer token for HTTP auth\n\n` +
+      `Attach options (interactive REPL):\n` +
+      `  --port PORT             V8 inspector port (default: 9229)\n` +
+      `  --host HOST             Inspector host (default: 127.0.0.1)\n` +
+      `  --url WS_URL            Direct WebSocket URL\n` +
+      `  --json                  ndjson stdio transport\n` +
+      `  --mcp                   MCP server on stdio\n` +
+      `  --frontend URL          Also launch Chrome for frontend debugging\n\n` +
       `Examples:\n` +
-      `  mypry open                                  # auto-detect dev server, launch Chrome\n` +
-      `  mypry open http://localhost:5173             # explicit URL\n` +
-      `  mypry attach                                # backend REPL\n` +
-      `  mypry attach --chrome                       # backend + frontend\n` +
-      `  mypry attach --json                         # ndjson for embedders\n` +
-      `  mypry attach --mcp                          # MCP for Claude Code\n` +
-      `  mypry inject 12345                           # enable inspector on PID 12345\n`
+      `  mypry serve                                    # backend daemon on :3098\n` +
+      `  mypry serve --frontend http://localhost:3001    # fullstack daemon\n` +
+      `  mypry serve --port 3099 --inspect 9229         # custom ports\n` +
+      `  mypry watch                                    # monitor agent ops in realtime\n` +
+      `  mypry attach                                   # backend REPL\n` +
+      `  mypry attach --frontend http://localhost:3001   # REPL + frontend\n` +
+      `  mypry open http://localhost:5173                # launch Chrome for debugging\n` +
+      `  mypry inject 12345                              # enable inspector on PID\n`
     )
     return
+  }
+
+  // ── `mypry watch` — live monitor of agent ops via SSE ──
+
+  if (positionals[0] === 'watch') {
+    const httpPort = values.http ? parseInt(values.http, 10) : (values.port !== '9229' ? parseInt(values.port!, 10) : 3098)
+    const baseUrl = `http://127.0.0.1:${httpPort}`
+    const headers: Record<string, string> = {}
+    if (values.token) headers['Authorization'] = `Bearer ${values.token}`
+
+    // ANSI colors
+    const DIM = '\x1b[2m'
+    const RESET = '\x1b[0m'
+    const BOLD = '\x1b[1m'
+    const GREEN = '\x1b[32m'
+    const YELLOW = '\x1b[33m'
+    const CYAN = '\x1b[36m'
+    const RED = '\x1b[31m'
+    const MAGENTA = '\x1b[35m'
+    const BLUE = '\x1b[34m'
+
+    process.stderr.write(`${BOLD}[mypry watch]${RESET} connecting to ${baseUrl}/events...\n`)
+
+    // First check health
+    try {
+      const h = await fetch(`${baseUrl}/health`, { headers }).then(r => r.json()) as any
+      const statusColor = h.status === 'paused' ? YELLOW : GREEN
+      process.stderr.write(`${BOLD}[mypry watch]${RESET} ✅ connected — ${statusColor}${h.status}${RESET}\n`)
+      process.stderr.write(`${DIM}─────────────────────────────────────────${RESET}\n`)
+    } catch {
+      process.stderr.write(`${RED}[mypry watch] ✗ cannot connect to ${baseUrl}${RESET}\n`)
+      process.stderr.write(`${DIM}Is the daemon running? Start with: mypry serve${RESET}\n`)
+      process.exit(1)
+    }
+
+    // Connect to SSE stream
+    const res = await fetch(`${baseUrl}/events`, { headers })
+    if (!res.ok || !res.body) {
+      process.stderr.write(`${RED}[mypry watch] SSE connection failed: ${res.status}${RESET}\n`)
+      process.exit(1)
+    }
+
+    const decoder = new TextDecoder()
+    let eventType = ''
+    let dataBuffer = ''
+
+    function formatTimestamp(): string {
+      const now = new Date()
+      return `${DIM}${now.toLocaleTimeString('en-GB')}${RESET}`
+    }
+
+    function formatOp(data: any): void {
+      const target = data.target === 'frontend' ? `${MAGENTA}frontend${RESET}` : `${BLUE}backend${RESET}`
+      const op = `${BOLD}${data.op}${RESET}`
+      const params = data.params || {}
+      const extras: string[] = []
+      if (params.expr) extras.push(`${DIM}expr=${RESET}"${params.expr.substring(0, 60)}${params.expr.length > 60 ? '…' : ''}"`)
+      if (params.file) extras.push(`${DIM}file=${RESET}${params.file}`)
+      if (params.line) extras.push(`${DIM}line=${RESET}${params.line}`)
+      if (params.condition) extras.push(`${DIM}cond=${RESET}"${params.condition}"`)
+      process.stdout.write(`${formatTimestamp()} ${CYAN}→${RESET} ${target} ${op}${extras.length ? ' ' + extras.join(' ') : ''}\n`)
+    }
+
+    function formatOpResult(data: any): void {
+      const target = data.target === 'frontend' ? `${MAGENTA}frontend${RESET}` : `${BLUE}backend${RESET}`
+      const result = data.result || {}
+      if (result.error) {
+        process.stdout.write(`${formatTimestamp()} ${RED}←${RESET} ${target} ${RED}error:${RESET} ${result.error}\n`)
+      } else if (result.status === 'paused') {
+        const fn = result.function || '?'
+        const file = result.file?.split('/').pop() || '?'
+        process.stdout.write(`${formatTimestamp()} ${YELLOW}←${RESET} ${target} ${YELLOW}paused${RESET} at ${BOLD}${fn}${RESET} ${DIM}${file}:${result.line}${RESET}\n`)
+      } else if (result.status === 'running') {
+        process.stdout.write(`${formatTimestamp()} ${GREEN}←${RESET} ${target} ${GREEN}running${RESET}\n`)
+      } else if (result.ok !== undefined) {
+        const val = result.value !== undefined ? JSON.stringify(result.value).substring(0, 80) : ''
+        process.stdout.write(`${formatTimestamp()} ${GREEN}←${RESET} ${target} ${DIM}=${RESET} ${val}\n`)
+      }
+    }
+
+    function formatPaused(data: any): void {
+      const fn = data.function || '?'
+      const file = data.file?.split('/').pop() || '?'
+      process.stdout.write(`${formatTimestamp()} ${YELLOW}⏸${RESET}  ${YELLOW}paused${RESET} at ${BOLD}${fn}${RESET} ${DIM}${file}:${data.line}${RESET}\n`)
+      if (data.locals) {
+        const keys = Object.keys(data.locals).slice(0, 5)
+        if (keys.length) {
+          process.stdout.write(`${DIM}          locals: ${keys.map(k => `${k}=${JSON.stringify(data.locals[k]).substring(0, 40)}`).join(', ')}${RESET}\n`)
+        }
+      }
+    }
+
+    function formatResumed(): void {
+      process.stdout.write(`${formatTimestamp()} ${GREEN}▶${RESET}  ${GREEN}resumed${RESET}\n`)
+    }
+
+    function handleEvent(event: string, data: string): void {
+      try {
+        const parsed = JSON.parse(data)
+        switch (event) {
+          case 'op': formatOp(parsed); break
+          case 'op-result': formatOpResult(parsed); break
+          case 'paused': formatPaused(parsed); break
+          case 'resumed': formatResumed(); break
+          case 'disconnected':
+            process.stdout.write(`${formatTimestamp()} ${RED}✗${RESET}  ${RED}disconnected${RESET}\n`)
+            break
+          default:
+            process.stdout.write(`${formatTimestamp()} ${DIM}${event}: ${data.substring(0, 100)}${RESET}\n`)
+        }
+      } catch {
+        process.stdout.write(`${formatTimestamp()} ${DIM}${event}: ${data.substring(0, 100)}${RESET}\n`)
+      }
+    }
+
+    // Parse SSE stream
+    const reader = res.body.getReader()
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n')
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim()
+        } else if (line.startsWith('data: ')) {
+          dataBuffer += line.slice(6)
+        } else if (line === '') {
+          if (eventType && dataBuffer) {
+            handleEvent(eventType, dataBuffer)
+          }
+          eventType = ''
+          dataBuffer = ''
+        }
+      }
+    }
+
+    process.stderr.write(`\n${DIM}[mypry watch] stream ended${RESET}\n`)
+    process.exit(0)
   }
 
   // ── `mypry open [URL]` — launch Chrome with CDP ──
@@ -135,7 +318,7 @@ async function main(): Promise<void> {
       process.stderr.write(`[mypry] scanning for dev servers...\n`)
       const servers = await detectDevServers()
       if (servers.length === 0) {
-        process.stderr.write('[mypry] no dev server found. Pass a URL: mypry open http://localhost:PORT\n')
+        process.stderr.write('[mypry] no dev servers found\n')
         process.exit(1)
       } else if (servers.length === 1) {
         chromeUrl = servers[0]
@@ -150,7 +333,7 @@ async function main(): Promise<void> {
     try {
       const { execSync } = await import('node:child_process')
       execSync('pkill -f "remote-debugging-port=9222" 2>/dev/null', { stdio: 'ignore' })
-      await new Promise(r => setTimeout(r, 500))
+      await new Promise(r => setTimeout(r, 1000))
     } catch {}
 
     const chromePath = await findChrome()
@@ -164,17 +347,16 @@ async function main(): Promise<void> {
     ], { stdio: 'ignore', detached: true })
     chromeProc.unref()
 
-    // Wait for CDP to be ready
+    // Wait for Chrome CDP to be ready
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 500))
       try {
         const targets = await discoverTargets('127.0.0.1', CHROME_DEBUG_PORT)
         if (targets.some(t => t.kind === 'chrome')) {
           process.stderr.write(`[mypry] ✅ Chrome ready — CDP on port ${CHROME_DEBUG_PORT}\n`)
-          process.stderr.write(`[mypry] debugger statements will now pause in mypry\n`)
-          process.exit(0)
+          break
         }
-      } catch {}
+      } catch { /* Chrome not ready yet */ }
     }
     process.stderr.write('[mypry] ✅ Chrome launched (CDP may take a moment)\n')
     process.exit(0)
@@ -206,8 +388,9 @@ async function main(): Promise<void> {
   let frontendSession: DebuggerSession | undefined
 
   if (values.chrome) {
-    // Check for explicit URL in positionals
-    const explicitUrl = positionals.find(p => p.startsWith('http://') || p.startsWith('https://') || p.startsWith('localhost'))
+    // Check for explicit URL from --frontend, positionals, or auto-detect
+    const presetUrl = (values as any)._frontendUrl
+    const explicitUrl = presetUrl || positionals.find(p => p.startsWith('http://') || p.startsWith('https://') || p.startsWith('localhost'))
     let chromeUrl: string
 
     if (explicitUrl) {
@@ -219,7 +402,7 @@ async function main(): Promise<void> {
       const servers = await detectDevServers()
       if (servers.length === 0) {
         process.stderr.write('[mypry] error: no dev server found on common ports (3000, 5173-5180, 8080)\n')
-        process.stderr.write('[mypry] tip: pass the URL explicitly — mypry attach --chrome http://localhost:PORT\n')
+        process.stderr.write('[mypry] tip: pass the URL explicitly — mypry serve --frontend http://localhost:PORT\n')
         process.exit(1)
       } else if (servers.length === 1) {
         chromeUrl = servers[0]
