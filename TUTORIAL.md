@@ -381,7 +381,7 @@ cd ~/my-project
 mypry serve            # reads .mypry.json, launches Chrome, connects both
 ```
 
-CLI flags always override the config file. Supported keys: `port`, `inspect`, `frontend`, `token`, `host`, `workers`.
+CLI flags always override the config file. Supported keys: `port`, `inspect`, `frontend`, `chromeHost`, `token`, `host`, `workers`.
 
 ---
 
@@ -404,6 +404,95 @@ mypry watch
 ```
 
 Color-coded, timestamped, shows `frontend` vs `backend`. Connects to the daemon's SSE stream — read-only, zero overhead.
+
+---
+
+## Feature 10 — Remote debugging
+
+Debug apps running on staging servers, VMs, or containers — from your machine, over SSH.
+
+### Setup
+
+```bash
+# On the remote server
+node --inspect=127.0.0.1:9230 server.mjs
+mypry serve --host 0.0.0.0 --inspect 9230 --port 3099 --token s3cr3t
+
+# On your machine — open an SSH tunnel
+ssh -L 3099:localhost:3099 -i ~/.ssh/key user@staging-server
+```
+
+Configure your agent's MCP bridge to point at the tunnel:
+
+```json
+{ "env": { "MYPRY_URL": "http://127.0.0.1:3099" } }
+```
+
+### Real session (tested against GCP)
+
+This is an actual transcript from debugging a Node.js app on a GCP VM (34.123.241.2), from a Mac over SSH tunnel:
+
+```
+→ debugger_set_breakpoint { "file": "server.mjs", "line": 12 }
+← { "ok": true, "id": 1 }
+
+(trigger login on the server)
+
+→ debugger_state {}
+← {
+    "status": "paused",
+    "file": "/home/berna/mypry-remote-demo/server.mjs",
+    "line": 12,
+    "function": "authenticate",
+    "source_window": [
+      { "line": 9,  "text": "function authenticate(email, password) {" },
+      { "line": 10, "text": "  const user = users.find(u => u.email === email)" },
+      { "line": 11, "text": "  const isValid = user && password === 'secret'" },
+      { "line": 12, "text": "  debugger  // ← mypry will pause here", "current": true },
+      { "line": 13, "text": "  return isValid ? user : null" }
+    ],
+    "locals": { "email": "berna@shipway.dev", "password": "secret", "isValid": true }
+  }
+
+→ debugger_eval { "expr": "email" }
+← { "ok": true, "type": "string", "value": "berna@shipway.dev" }
+
+→ debugger_eval { "expr": "user" }
+← { "ok": true, "type": "object", "value": { "id": 3, "name": "Berna", "email": "berna@shipway.dev", "role": "superadmin" } }
+
+→ debugger_backtrace {}
+← { "frames": [
+    { "function": "authenticate", "file": "server.mjs", "line": 12 },
+    { "function": "<anon>", "file": "server.mjs", "line": 42 }
+  ]}
+
+→ debugger_continue {}
+← { "status": "running" }
+```
+
+The agent paused a remote process, inspected locals, read the call stack, and resumed — from a different continent. No code changes, just config.
+
+### Headless Chrome (CI / containers)
+
+For frontend debugging on a server with no display:
+
+```bash
+# On the server
+google-chrome --headless --remote-debugging-address=0.0.0.0 --remote-debugging-port=9222 \
+  --no-first-run --no-sandbox http://localhost:3001
+
+# On your machine
+mypry serve --host staging --chrome-host staging:9222
+```
+
+Or via SSH tunnel:
+
+```bash
+ssh -L 3099:localhost:3099 -L 9222:localhost:9222 user@staging
+mypry serve --chrome-host 127.0.0.1:9222
+```
+
+See the full [Remote Debugging Guide](docs/remote-debugging.md) for Docker, security, and `.mypry.json` config.
 
 ---
 
@@ -450,6 +539,20 @@ Color-coded, timestamped, shows `frontend` vs `backend`. Connects to the daemon'
 2. debugger_state {}
 3. debugger_eval { expr: "global.connectionPool.size" }
 4. debugger_continue {}
+```
+
+### Remote staging inspection
+
+```
+1. (SSH tunnel: ssh -L 3099:localhost:3099 user@staging)
+2. (configure MCP bridge: MYPRY_URL=http://127.0.0.1:3099)
+3. debugger_eval { expr: "process.version" }      → verify remote connection
+4. debugger_set_breakpoint { file: "handler.ts", line: 42 }
+5. (trigger request on the server)
+6. debugger_state {}                               → paused on staging
+7. debugger_eval { expr: "req.headers" }           → inspect staging-only data
+8. debugger_continue {}
+9. debugger_remove_breakpoint { id: 1 }
 ```
 
 ---

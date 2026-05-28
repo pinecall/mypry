@@ -180,6 +180,43 @@ Survives `nodemon`, NestJS `--watch`, and `ts-node-dev` restarts. The CDP socket
 | Standalone script, no flag | `require('mypry')` then call `pry()` |
 | Already-running process, no flag | `mypry inject <PID>` (sends `SIGUSR1`) |
 
+### Remote debugging
+
+Debug apps on staging servers, VMs, or containers from your machine. The daemon runs on the server, your agent connects over SSH tunnel.
+
+```bash
+# On the server
+node --inspect=127.0.0.1:9230 server.mjs
+mypry serve --host 0.0.0.0 --inspect 9230 --port 3099 --token s3cr3t
+
+# On your machine (SSH tunnel)
+ssh -L 3099:localhost:3099 user@server
+```
+
+Then point your MCP bridge at `http://127.0.0.1:3099`. Your agent debugs the remote process as if it were local:
+
+```
+→ debugger_set_breakpoint { file: "server.mjs", line: 12 }
+← { ok: true, id: 1 }
+
+(trigger request on the server)
+
+→ debugger_state {}
+← { status: "paused", file: "server.mjs", line: 12, function: "authenticate",
+    locals: { email: "berna@shipway.dev", isValid: true } }
+
+→ debugger_eval { expr: "user" }
+← { ok: true, value: { id: 3, name: "Berna", role: "superadmin" } }
+
+→ debugger_backtrace {}
+← { frames: [{ function: "authenticate", file: "server.mjs", line: 12 },
+             { function: "<anon>", file: "server.mjs", line: 42 }] }
+
+→ debugger_continue {}
+```
+
+For headless Chrome on the server, add `--chrome-host server:9222`. See the full [Remote Debugging Guide](docs/remote-debugging.md) for SSH tunnels, Docker, and security.
+
 ---
 
 ## Project config (`.mypry.json`)

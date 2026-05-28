@@ -57,6 +57,75 @@ Your agent now has full `debugger_*` tools against the remote process.
 mypry watch --port 3098 --host staging-server
 ```
 
+### Real session transcript
+
+This was tested against a GCP VM (`34.123.241.2` / `blossomcrmuat`) from a Mac in Buenos Aires, over SSH tunnel. The demo app has a `debugger` statement inside `authenticate()`.
+
+```bash
+# SSH tunnel (local 3099 → remote 3099)
+ssh -L 3099:localhost:3099 -i ~/.ssh/google_compute_engine berna@34.123.241.2
+```
+
+```
+→ health
+← { "ok": true, "connected": true, "status": "running" }
+
+→ eval { "expr": "process.version" }
+← { "ok": true, "value": "v20.19.5" }
+
+→ eval { "expr": "Math.floor(process.uptime()) + 's'" }
+← { "ok": true, "value": "274s" }
+
+→ set_breakpoint { "file": "server.mjs", "line": 12 }
+← { "ok": true, "id": 1 }
+
+(trigger POST /login on the server via SSH)
+
+→ state
+← {
+    "status": "paused",
+    "file": "/home/berna/mypry-remote-demo/server.mjs",
+    "line": 12,
+    "function": "authenticate",
+    "source_window": [
+      { "line": 10, "text": "  const user = users.find(u => u.email === email)" },
+      { "line": 11, "text": "  const isValid = user && password === 'secret'" },
+      { "line": 12, "text": "  debugger  // ← mypry will pause here", "current": true },
+      { "line": 13, "text": "  return isValid ? user : null" }
+    ],
+    "locals": {
+      "email": "berna@shipway.dev",
+      "password": "secret",
+      "user": "Object",
+      "isValid": true
+    }
+  }
+
+→ eval { "expr": "email" }
+← { "ok": true, "type": "string", "value": "berna@shipway.dev" }
+
+→ eval { "expr": "user" }
+← { "ok": true, "type": "object", "value": {
+    "id": 3, "name": "Berna", "email": "berna@shipway.dev", "role": "superadmin"
+  }}
+
+→ eval { "expr": "isValid" }
+← { "ok": true, "type": "boolean", "value": true }
+
+→ backtrace
+← { "frames": [
+    { "function": "authenticate", "file": "server.mjs", "line": 12 },
+    { "function": "<anon>", "file": "server.mjs", "line": 42 }
+  ]}
+
+→ continue
+← { "status": "running" }
+
+(login response: { "ok": true, "user": { "id": 3, "name": "Berna", "role": "superadmin" } })
+```
+
+The agent paused a process on a different continent, inspected every local variable, read the call stack, and resumed — all through an SSH tunnel. Zero code changes.
+
 ---
 
 ## Fullstack: local Chrome + remote backend
