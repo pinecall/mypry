@@ -53,6 +53,8 @@ When the mypry MCP server is active, these tools are available:
 | `mcp_mypry_debugger_trace_stop` | — | Stop trace, return all hits |
 | `mcp_mypry_debugger_trace_status` | — | Peek at buffer without stopping |
 
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires daemon started with `--chrome`.
+
 ---
 
 ## Workflows

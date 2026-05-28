@@ -488,20 +488,26 @@ When the process is running, `debugger_eval` uses `Runtime.evaluate` for global 
 5. debugger_continue {}                  → resume
 ```
 
-### Pattern 5: Frontend → Backend handoff
+### Pattern 5: Frontend → Backend handoff (ONE daemon, `target` param)
+
+```bash
+# Setup: single daemon with --chrome
+mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
+```
 
 ```
 # Frontend: intercept the API call
-1. debugger_eval {expr: "install XHR interceptor"}
-2. (user clicks login)
-3. debugger_state {}                     → paused at XMLHttpRequest.send
-4. debugger_eval {expr: "JSON.parse(body)"}  → see request payload
-5. debugger_continue {}                  → let request fly
+1. debugger_eval {target: "frontend", expr: "install XHR interceptor with debugger;"}
+2. debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
+   → page pauses at XMLHttpRequest.send
+3. debugger_state {target: "frontend"}   → paused, locals: {body: '{"email":"..."}'}
+4. debugger_eval {target: "frontend", expr: "JSON.parse(body)"}
+5. debugger_continue {target: "frontend"} → request flies to backend
 
-# Backend: catch the same request
-6. debugger_set_breakpoint {file: "auth.service.ts", line: 90, condition: "emailAddress === 'admin@test.com'"}
-7. debugger_state {}                     → paused in validateUser
-8. debugger_eval {expr: "user.role?.name"}  → inspect server-side
+# Backend: catch the same request (same daemon, no target = backend default)
+6. debugger_state {}                     → paused at auth.service.ts:151 (source-mapped!)
+7. debugger_eval {expr: "user.role?.name"} → "Superadmin"
+8. debugger_backtrace {}                 → auth.service.ts:151 (source-mapped!)
 9. debugger_continue {}
 ```
 
@@ -527,6 +533,8 @@ When the process is running, `debugger_eval` uses `Runtime.evaluate` for global 
 | `debugger_trace_stop` | — | No | Stop trace, return hits |
 | `debugger_trace_status` | — | No | Peek at trace buffer |
 | `debugger_workers` | — | No | List worker threads |
+
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry attach --chrome`.
 
 ---
 
