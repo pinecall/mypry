@@ -1,280 +1,200 @@
-# Skill: mypry Debugger (MCP + HTTP)
+# Skill: mypry — Interactive Debugger for AI Agents
 
-> **When to read this file:** Whenever you need to debug a running Node.js process, inspect variables at runtime, set breakpoints, trace execution, or interact with worker threads.
+> **When to read this file:** Whenever you need to debug a running Node.js process, inspect variables at runtime, set breakpoints, trace execution, debug frontend (Chrome CDP), or test remote debugging.
 
 ---
 
 ## Overview
 
-mypry is an inline debugger for Node.js. It connects via Chrome DevTools Protocol (CDP) to a running process and lets you inspect, eval, step, and continue — all via HTTP API or MCP tools.
+mypry is an inline debugger for Node.js and the browser. It connects via CDP to a running process and exposes MCP tools and an HTTP API for inspecting, evaluating, stepping, and continuing.
 
-**Two ways to use from Antigravity:**
+**Architecture:**
 
-| Method | When | How |
-|--------|------|-----|
-| **MCP tools** | mypry MCP server is configured | Call `mcp_mypry_*` tools directly |
-| **HTTP API** | Process has mypry HTTP on :3099 or :3098 | `curl` commands via `run_command` |
+```
+Agent ── stdio ──▶ mypry-bridge ── HTTP ──▶ mypry daemon ── CDP ──▶ Node.js (:9229)
+                   (bin, instant)            (mypry serve)          Chrome  (:9222)
+```
+
+**Two binaries:**
+- `mypry` — CLI: `serve`, `watch`, `attach`, `open`, `inject`
+- `mypry-bridge` — MCP bridge (stateless proxy, what agents run)
+
+Both installed via `npm install -g mypry` or `npm link` from `~/mypry`.
 
 ---
 
-## MCP Tools Reference
+## MCP Setup
 
-When the mypry MCP server is active, these tools are available:
+### Standalone (default port 3098)
+
+```json
+{
+  "mypry": {
+    "command": "mypry-bridge"
+  }
+}
+```
+
+No env needed — defaults to `http://127.0.0.1:3098`.
+
+### Aurora TUI (port 3099)
+
+```json
+{
+  "mypry": {
+    "command": "mypry-bridge",
+    "env": { "MYPRY_URL": "http://127.0.0.1:3099/api/debugger" }
+  }
+}
+```
+
+### Remote (via SSH tunnel)
+
+```json
+{
+  "mypry": {
+    "command": "mypry-bridge",
+    "env": { "MYPRY_URL": "http://127.0.0.1:3099" }
+  }
+}
+```
+
+With SSH tunnel: `ssh -L 3099:localhost:3099 user@server`
+
+---
+
+## MCP Tools
+
+All tools accept optional `target` (`"frontend"` / `"backend"`) and `worker` params.
 
 ### Inspection (safe, read-only)
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `mcp_mypry_debugger_state` | — | Current pause: file (.ts via source maps), line, function, locals, source window |
-| `mcp_mypry_debugger_eval` | `expr`, `worker?` | Evaluate JS — paused: frame scope; running: global scope (Runtime.evaluate) |
-| `mcp_mypry_debugger_backtrace` | — | Call stack frames |
-| `mcp_mypry_debugger_source` | `file?` | Full source code of current file |
-| `mcp_mypry_debugger_list_breakpoints` | — | All active breakpoints |
-| `mcp_mypry_debugger_trace_status` | — | Peek at trace buffer without stopping |
-| `mcp_mypry_debugger_workers` | — | List worker threads |
+| `debugger_state` | — | Current pause: file, line, function, locals, source window |
+| `debugger_eval` | `expr` | Evaluate JS — paused: frame scope; running: global scope |
+| `debugger_backtrace` | — | Call stack frames |
+| `debugger_source` | `file?` | Full source (source-mapped) |
+| `debugger_list_breakpoints` | — | All active breakpoints |
+| `debugger_trace_status` | — | Peek at trace buffer |
+| `debugger_workers` | — | List worker threads |
 
-### Execution Control (mutating)
+### Execution Control
+
+| Tool | Params | Blocks? | Description |
+|------|--------|:------:|-------------|
+| `debugger_continue` | — | **yes** | Resume until next breakpoint (30s timeout) |
+| `debugger_step_over` | — | no | Next line |
+| `debugger_step_into` | — | no | Into function |
+| `debugger_step_out` | — | no | Out of function |
+| `debugger_pause` | — | no | Force-pause running process |
+| `debugger_set_breakpoint` | `file`, `line`, `condition?` | no | Set breakpoint |
+| `debugger_remove_breakpoint` | `id` | no | Remove by ID |
+
+### Trace Mode
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `mcp_mypry_debugger_continue` | — | Resume execution. **BLOCKS** until next pause or termination |
-| `mcp_mypry_debugger_step_over` | — | Step to next line, returns new state |
-| `mcp_mypry_debugger_step_into` | — | Step into function call, returns new state |
-| `mcp_mypry_debugger_step_out` | — | Step out of current function, returns new state |
-| `mcp_mypry_debugger_pause` | — | Force-pause a running process |
-| `mcp_mypry_debugger_set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint (optional condition) |
-| `mcp_mypry_debugger_remove_breakpoint` | `id` | Remove breakpoint by ID |
-
-### Trace Mode (non-blocking observation)
-
-| Tool | Params | Description |
-|------|--------|-------------|
-| `mcp_mypry_debugger_trace_start` | `maxBuffer?` | Start trace — auto-resume, collect snapshots |
-| `mcp_mypry_debugger_trace_stop` | — | Stop trace, return all hits |
-| `mcp_mypry_debugger_trace_status` | — | Peek at buffer without stopping |
-
-> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry serve --frontend`.
+| `debugger_trace_start` | `maxBuffer?` | Auto-resume + collect snapshots |
+| `debugger_trace_stop` | — | Stop, return all hits |
+| `debugger_trace_status` | — | Peek without stopping |
 
 ---
 
-## Workflows
-
-### 1. Inspect a Paused Debugger
-
-```
-1. mcp_mypry_debugger_state
-   → see file, line, function, locals, source_window
-2. mcp_mypry_debugger_eval {expr: "variableName"}
-   → evaluate any expression in the paused scope
-3. mcp_mypry_debugger_backtrace
-   → see how we got here
-```
-
-### 2. Set a Conditional Breakpoint and Wait
-
-```
-1. mcp_mypry_debugger_set_breakpoint {
-     file: "auth.service.ts",
-     line: 151,
-     condition: "emailAddress === \"superadmin@test.com\""
-   }
-2. mcp_mypry_debugger_continue
-   → BLOCKS until the condition fires (superadmin logs in)
-3. mcp_mypry_debugger_state
-   → inspect the paused state
-```
-
-### 3. Trace Multiple Executions
-
-```
-1. mcp_mypry_debugger_set_breakpoint {file: "auth.service.ts", line: 151}
-2. mcp_mypry_debugger_trace_start {maxBuffer: 100}
-   → app keeps running, breakpoints auto-resume
-3. (trigger actions — run tests, make API calls, etc.)
-4. mcp_mypry_debugger_trace_stop
-   → returns {count: N, hits: [{timestamp, file, line, function, locals}, ...]}
-```
-
-### 4. Debug Worker Threads
-
-```
-1. mcp_mypry_debugger_workers
-   → [{sessionId: "1", title: "[worker 1] WorkerThread"}, ...]
-2. mcp_mypry_debugger_eval {expr: "workerData", worker: "1"}
-   → eval in specific worker's scope
-```
-
-### 5. Frontend Debugging (Chrome CDP)
+## CLI Commands
 
 ```bash
-# Setup: unified daemon (backend + frontend in ONE session)
-mypry serve --frontend http://localhost:3001
+mypry serve                                    # daemon on :3098
+mypry serve --frontend http://localhost:3001   # + Chrome CDP
+mypry serve --port 3099 --inspect 9230         # custom ports
+mypry serve --host 0.0.0.0 --token s3cr3t     # remote + auth
+
+mypry watch                                    # live monitor (SSE)
+mypry watch --host staging --port 3099         # remote monitor
+
+mypry open http://localhost:3001               # launch debug Chrome
+mypry attach                                   # interactive REPL
+mypry inject <PID>                             # enable inspector on running process
 ```
 
-```
-1. mcp_mypry_debugger_eval {target: "frontend", expr: "document.title"}
-   → eval runs globally (Runtime.evaluate) — no pause needed
-2. mcp_mypry_debugger_eval {target: "frontend", expr: "install XHR interceptor with debugger;"}
-   → any XHR to /auth/ will trigger a pause
-3. (user clicks login button)
-4. mcp_mypry_debugger_state {target: "frontend"}
-   → paused at XMLHttpRequest.send, locals: {body: '{"emailAddress":"..."}'}
-5. mcp_mypry_debugger_eval {target: "frontend", expr: "JSON.parse(body)"}
-   → inspect the request payload
-6. mcp_mypry_debugger_continue {target: "frontend"}
+## Project Config (`.mypry.json`)
+
+```json
+{
+  "port": 3098,
+  "inspect": 9229,
+  "frontend": "http://localhost:3001",
+  "chromeHost": "staging:9222",
+  "token": "s3cr3t",
+  "host": "127.0.0.1",
+  "workers": true
+}
 ```
 
-### 6. Fullstack Handoff (frontend → backend in ONE session)
-
-```
-1. mcp_mypry_debugger_eval {target: "frontend", expr: "install XHR interceptor"}
-2. mcp_mypry_debugger_eval {target: "frontend", expr: "document.querySelector('#login-btn')?.click()"}
-   → frontend pauses at XMLHttpRequest.send
-3. mcp_mypry_debugger_state {target: "frontend"}
-   → locals: {body: '{"emailAddress":"superadmin@test.com","password":"admin"}'}
-4. mcp_mypry_debugger_continue {target: "frontend"}
-   → request flies to backend
-5. mcp_mypry_debugger_state {}
-   → paused at src/auth/auth.service.ts:151 (source-mapped!)
-   → locals: {emailAddress: "superadmin@test.com", user: "User", isMatch: true}
-6. mcp_mypry_debugger_eval {expr: "user.role?.name"}
-   → "Superadmin"
-7. mcp_mypry_debugger_continue {}
-```
-
-### 7. Vue/Pinia State Inspection
-
-```
-# When paused inside a Vue component handler:
-1. mcp_mypry_debugger_eval {target: "frontend", expr: "authStore"}
-   → {token: null, loading: false, isAuthenticated: false}  (Pinia $state auto-unwrapped)
-2. mcp_mypry_debugger_eval {target: "frontend", expr: "devLoginLoading"}
-   → "superadmin"  (Vue ref() auto-unwrapped)
-
-# Global Pinia access (no pause needed):
-3. mcp_mypry_debugger_eval {target: "frontend", expr: "document.getElementById('app').__vue_app__.config.globalProperties.$pinia.state.value.auth"}
-   → full auth store state
-```
+CLI flags override config. Place in project root.
 
 ---
 
-## HTTP API Fallback
-
-When MCP is not available, use HTTP directly:
+## Building & Testing
 
 ```bash
-# State
-curl -s http://localhost:3099/api/debugger/state
-
-# Eval
-curl -s -X POST http://localhost:3099/api/debugger/command \
-  -H 'Content-Type: application/json' \
-  -d '{"op":"eval","expr":"emailAddress"}'
-
-# Set conditional breakpoint
-curl -s -X POST http://localhost:3099/api/debugger/command \
-  -d '{"op":"set_breakpoint","file":"auth.service.ts","line":151,"condition":"emailAddress === \"superadmin@test.com\""}'
-
-# Trace
-curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"trace_start"}'
-curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"trace_stop"}'
-
-# Workers
-curl -s http://localhost:3099/workers
-curl -s -X POST http://localhost:3099/command -d '{"op":"state","worker":"1"}'
-
-# Continue
-curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"continue"}'
+cd ~/mypry
+npm run build              # tsc → dist/
+npm run test               # contract + suite tests
+npm run test:suite         # just the NDJSON contract tests
+npm link                   # makes mypry + mypry-bridge available globally
 ```
 
-> Note: Aurora's TUI exposes the API at `localhost:3099/api/debugger/*`.
-> Standalone mypry HTTP uses `localhost:3098/*` (no `/api/debugger` prefix).
+### Test structure
+
+```
+test/
+  ndjson-contract.test.ts  — main test suite (16 tests)
+test-aurora-contract.cjs   — Aurora TUI contract tests
+```
+
+### Verified features
+
+All these have been tested end-to-end:
+
+- ✅ Backend breakpoints (debugger; + set_breakpoint)
+- ✅ Conditional breakpoints
+- ✅ Eval in paused frame + running global
+- ✅ Step over/into/out
+- ✅ Backtrace with source maps (tsc + Vite)
+- ✅ Trace mode (non-blocking)
+- ✅ Worker threads
+- ✅ Frontend debugging (Chrome CDP + Vue/Pinia unwrapping)
+- ✅ Fullstack handoff (frontend → backend in one session)
+- ✅ Remote debugging (Mac → SSH tunnel → GCP server)
+- ✅ Auto-reconnect (nodemon, NestJS --watch)
+- ✅ `mypry watch` live monitor (local + remote)
+- ✅ Token auth (Bearer token)
+
+---
+
+## Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/cli.ts` | CLI entry: serve, watch, attach, open, inject |
+| `src/mcp-bridge.ts` | MCP bridge (stateless stdio proxy → HTTP) |
+| `src/core/session.ts` | DebuggerSession — CDP wrapper, breakpoints, eval |
+| `src/core/ops.ts` | Operation dispatcher (eval, state, step, etc.) |
+| `src/core/snapshot.ts` | Snapshot builder (locals, source window, source maps) |
+| `src/core/targets.ts` | Target discovery (inspector, Chrome CDP) |
+| `src/transports/http.ts` | HTTP server (REST + SSE) |
+| `src/transports/mcp.ts` | MCP server (tools → ops) |
+| `src/browser.ts` | Chrome launch + CDP connect |
 
 ---
 
 ## Important Behavior Notes
 
-1. **`debugger_continue` is BLOCKING** — it waits until the next breakpoint fires or the process terminates. Don't call it unless you expect another pause.
-
-2. **Trace mode is non-blocking** — the app runs normally. Use it when you want to observe without interrupting.
-
-3. **Conditional breakpoints are powerful** — `condition: "order.total > 10000"` means you only pause on expensive orders.
-
-4. **Workers don't have separate ports** — they're accessed via the `worker` parameter on eval/state/continue commands.
-
-5. **Source maps are automatic** — state, backtrace, and source all resolve to original paths:
-   - **tsc** (NestJS): `dist/auth/auth.service.js:136` → `src/auth/auth.service.ts:151`
-   - **Vite** (Vue): `http://localhost:3001/src/auth/Login.vue?t=123` → `src/auth/Login.vue`
-   - Column scanning (0–79) handles indented `debugger;` statements.
-
-6. **Global eval works when not paused** — `debugger_eval` falls back to `Runtime.evaluate` (global scope). Use it to query DOM, install interceptors, or check globals on a running process.
-
-7. **Frontend debugging via `--frontend`** — unified daemon connects to both Node.js (:9229) and Chrome (:9222). Use `target: "frontend"` on any tool to route to the browser.
-
-## Architecture
-
-```
-Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CDP) → Node.js (:9229)
-                                                                    → (CDP) → Chrome  (:9222)
-```
-
-- **MCP Bridge** (`mcp-bridge.js`): stateless proxy, starts instantly, never blocks
-- **mypry daemon** (`mypry serve`): connects to V8 inspector, manages CDP, auto-reconnects
-
-### Setup
-
-**1. Start the daemon** (before using MCP tools):
-
-```bash
-# Backend only
-mypry serve
-
-# Fullstack (backend + Chrome)
-mypry serve --frontend http://localhost:3001
-```
-
-> Aurora's TUI starts its own debugger on :3099. For standalone debugging, use :3098.
-
-**2. MCP bridge** is auto-started by Antigravity via `mcp_config.json`:
-
-```json
-{
-  "mypry": {
-    "command": "/Users/berna/.nvm/versions/node/v24.14.0/bin/node",
-    "args": ["/Users/berna/mypry/dist/mcp-bridge.js"]
-  }
-}
-```
-
-The bridge proxies tool calls to `http://127.0.0.1:3098`. If the daemon isn't running, tools return a clean error.
-
-### Claude Code (~/.claude/mcp.json)
-
-Same bridge architecture:
-
-```json
-{
-  "mcpServers": {
-    "mypry": {
-      "command": "node",
-      "args": ["/Users/berna/mypry/dist/mcp-bridge.js"]
-    }
-  }
-}
-```
-
-### Codex (HTTP only)
-
-```bash
-# Start daemon, then use curl
-mypry serve
-curl http://localhost:3098/state
-```
-
----
-
-## Prerequisites
-
-- Target process running with `--inspect` (Aurora backend does this automatically)
-- mypry daemon running: `mypry serve`
-- mypry installed: `npm link` from `~/mypry`
+1. **`debugger_continue` BLOCKS** — waits up to 30s for next pause. Don't call unless you expect a breakpoint.
+2. **Trace mode is non-blocking** — app runs normally, snapshots collected automatically.
+3. **Source maps are automatic** — TypeScript paths shown in state, backtrace, source.
+4. **Global eval when not paused** — falls back to `Runtime.evaluate` (global scope).
+5. **Vue/Pinia auto-unwrapping** — `ref()` and Pinia `$state` automatically unwrapped in eval results.
+6. **Auto-reconnect** — survives process restarts (every 2s, up to 40s).
+7. **`--host` binds HTTP too** — `--host 0.0.0.0` makes both inspector and HTTP daemon listen on all interfaces.
