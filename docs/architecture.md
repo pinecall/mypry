@@ -14,7 +14,7 @@ debugger ─ V8 inspector :9229 ─▶  │  DebuggerSession (backend)      │
                                   │   ├─ pause / step / eval          │
 pry()    ─ V8 inspector :9229 ─▶  │   ├─ breakpoints (conditional)   │
                                   │   ├─ trace mode (non-blocking)   │
-debugger ─ Chrome CDP   :9222 ─▶  │   ├─ source maps (.ts, .vue)    │
+debugger ─ Chrome CDP   :9222 ─▶  │   ├─ source maps (.ts, .tsx, .vue) │
                                   │   ├─ Vue/Pinia unwrap            │
 workers  ─ V8 inspector       ─▶  │   ├─ worker threads              │
                                   │   └─ auto-reconnect              │
@@ -63,7 +63,7 @@ mypry supports four transports, all using the same `executeOp` dispatcher:
 | **REPL** | Human interactive use | readline on stdin |
 | **MCP** | AI agents (via bridge) | JSON-RPC 2.0 on stdio |
 
-All transports call the same `executeOp(session, { op, ...params })` function, so behavior is identical across them.
+All transports call the same `executeOp(session, op, params)` function, so behavior is identical across them.
 
 ---
 
@@ -93,7 +93,9 @@ The daemon stays up through the entire cycle. Agents just see a brief `"status":
 
 ## Source map resolution
 
-When the debugger pauses, V8 reports the **compiled** file (e.g. `dist/auth/auth.service.js:136`). mypry resolves to the **original** source:
+When the debugger pauses, V8 reports the **compiled** file (e.g. `dist/auth/auth.service.js:136`). mypry resolves to the **original** source.
+
+### File-based source maps (tsc, esbuild)
 
 1. Read the compiled file from disk (via `Debugger.getScriptSource` or filesystem)
 2. Parse the `//# sourceMappingURL` comment
@@ -102,9 +104,23 @@ When the debugger pauses, V8 reports the **compiled** file (e.g. `dist/auth/auth
 5. Scan columns 0–79 to find mappings (handles indented `debugger;` statements)
 6. Return the original file and line in `state`, `backtrace`, and `source`
 
+### Inline source maps (Vite dev mode — React, Vue, Svelte)
+
+Vite transforms `.tsx`, `.vue`, `.svelte` files on the fly and embeds inline source maps as `data:application/json;base64,...` in the script source. mypry handles this via `_resolveInlineSourceMap()`:
+
+1. When `setBreakpoint("App.tsx", 15)` is called, search loaded scripts for a URL containing the filename
+2. Fetch the script source via `Debugger.getScriptSource`
+3. Extract the base64 inline source map from the `//# sourceMappingURL=data:...` comment
+4. Decode and parse the mappings
+5. Map the original line → generated line
+6. Use `Debugger.setBreakpointByUrl` with the Vite script URL and the resolved generated line
+
+This is what makes `set_breakpoint("App.tsx", 15)` work with Vite dev server — no build step needed.
+
 For Vite frontend files, URL cleanup strips query strings:
 ```
-http://localhost:3001/src/Login.vue?t=12345  →  src/Login.vue
+http://localhost:5173/src/App.tsx?t=12345  →  src/App.tsx
+http://localhost:5173/src/Login.vue?t=12345  →  src/Login.vue
 ```
 
 ---
@@ -161,21 +177,31 @@ mypry/
 ├── src/
 │   ├── cli.ts                  # CLI entry: serve, attach, watch, open, inject
 │   ├── mcp-bridge.ts           # Stateless MCP → HTTP proxy
+│   ├── pry.ts                  # Node.js pry() inline trigger
+│   ├── browser.ts              # Browser-side pry() trigger
 │   ├── core/
-│   │   ├── cdp.ts              # CDPClient (WebSocket, zero deps)
-│   │   ├── session.ts          # DebuggerSession (pause/step/eval/trace)
-│   │   ├── snapshot.ts         # Build state snapshots
-│   │   ├── ops.ts              # executeOp dispatcher
-│   │   ├── targets.ts          # Inspector/Chrome target discovery
-│   │   ├── source-map.ts       # Source map resolution
-│   │   └── index.ts            # Public API exports
+│   │   ├─ cdp-client.ts         # CDPClient + WorkerCDPProxy (WebSocket, zero deps)
+│   │   ├─ session.ts            # DebuggerSession (pause/step/eval/trace/sourcemaps)
+│   │   ├─ snapshot.ts           # Build state snapshots
+│   │   ├─ ops.ts                # executeOp dispatcher
+│   │   ├─ targets.ts            # Inspector/Chrome target discovery
+│   │   ├─ sourcemap.ts          # Source map resolution (file + inline)
+│   │   └─ index.ts              # Public API exports
 │   └── transports/
 │       ├── http.ts             # HTTP + SSE server
 │       ├── ndjson.ts           # ndjson stdio transport
 │       ├── repl.ts             # Interactive REPL
 │       └── mcp.ts              # Direct MCP on stdio
+├── test/
+│   ├── ndjson-contract.test.ts     # NDJSON contract tests (16 tests)
+│   ├── fullstack-integration.test.ts # Fullstack integration tests (7 tests)
+│   └── helpers/                    # Test utilities
+├── examples/
+│   ├── fullstack/              # React + Express example app (used by integration tests)
+│   ├── hello.cjs               # Minimal CJS example
+│   ├── server.cjs              # Express example
+│   └── tutorial-server.cjs     # TUTORIAL.md companion
 ├── docs/                       # Detailed documentation
-├── test/                       # Integration tests
 ├── .agents/skills/SKILL.md     # AI agent instructions
 ├── TUTORIAL.md                 # Hands-on walkthrough
 └── README.md                   # Overview + quickstart

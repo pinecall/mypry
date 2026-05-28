@@ -133,16 +133,19 @@ debugger_set_breakpoint {
 }
 ```
 
-### Source maps (TypeScript & Vue), automatically
+### Source maps (TypeScript, React, Vue), automatically
 
-`state`, `backtrace`, and `source` always show your **original** source, never compiled `dist/*.js`. Breakpoints on `.ts` files are automatically resolved to the compiled `.js` via source maps.
+`state`, `backtrace`, and `source` always show your **original** source, never compiled `dist/*.js`. Breakpoints on `.ts` / `.tsx` / `.vue` files are automatically resolved to the compiled output via source maps.
 
 | Pipeline | Without mypry | With mypry |
 |----------|---------------|------------|
 | **tsc** (NestJS) | `dist/auth/auth.service.js:135` | `src/auth/auth.service.ts:147` |
+| **Vite** (React) | `http://localhost:5173/src/App.tsx?t=123` | `src/App.tsx` |
 | **Vite** (Vue) | `http://localhost:5173/src/Login.vue?t=123` | `src/Login.vue` |
 
-> Backend needs `"sourceMap": true` in `tsconfig.json`. Vite dev mode emits inline maps automatically.
+> **Any Vite-served frontend works** — React (`.tsx`), Vue (`.vue`), Svelte, plain JS.
+> Vite dev mode emits inline source maps that mypry decodes automatically.
+> Backend needs `"sourceMap": true` in `tsconfig.json`.
 > `set_breakpoint("file.ts", line)` works — no need to know the compiled `.js` file or line number.
 
 ### Framework-aware values
@@ -177,7 +180,8 @@ Survives `nodemon`, NestJS `--watch`, and `ts-node-dev` restarts. The CDP socket
 | Situation | Command |
 |-----------|---------|
 | App started with `--inspect` | `mypry serve` |
-| Standalone script, no flag | `require('mypry')` then call `pry()` |
+| Standalone script, no flag | `require('mypry')()` or `import { pry } from 'mypry'; pry()` |
+| Browser-side trigger | `import { pry } from 'mypry/browser'; pry()` |
 | Already-running process, no flag | `mypry inject <PID>` (sends `SIGUSR1`) |
 
 ### Remote debugging
@@ -455,7 +459,7 @@ pry()    ─ V8 inspector :9229 ─▶  │   ├─ pause / step / eval      �
                                   │   ├─ trace mode (non-block)   │
                                   │   ├─ conditional breakpoints  │
                                   │   ├─ worker threads           │
-                                  │   ├─ source maps (.ts/.vue)   │
+                                  │   ├─ source maps (.ts/.tsx/.vue)│
                                   │   └─ auto-reconnect           │
                                   │                              │
                                   │  Transports: REPL · ndjson ·  │

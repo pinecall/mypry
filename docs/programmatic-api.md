@@ -5,6 +5,8 @@ mypry exports its internals so you can build custom UIs, TUIs, integrations, or 
 ```ts
 import {
   CDPClient,
+  WorkerCDPProxy,
+  discoverWorkers,
   DebuggerSession,
   discoverTargets,
   matchTarget,
@@ -174,22 +176,14 @@ The shared operation dispatch used by every transport (HTTP, ndjson, MCP). Execu
 ```ts
 import { executeOp } from 'mypry/core'
 
-const result = await executeOp(session, { op: 'eval', expr: 'users.length' })
+const result = await executeOp(session, 'eval', { expr: 'users.length' })
 // { ok: true, type: 'number', value: 3, description: '3' }
 
-const state = await executeOp(session, { op: 'state' })
+const state = await executeOp(session, 'state')
 // { status: 'paused', file: '...', line: 151, ... }
 ```
 
-Supports `target` and `worker` routing when you pass frontend/worker sessions:
-
-```ts
-const result = await executeOp(
-  session,
-  { op: 'eval', expr: 'document.title', target: 'frontend' },
-  { frontendSession, workerSessions }
-)
-```
+> **Note:** The signature is `executeOp(session, op, params)` — NOT `executeOp(session, { op, ...params })`. The `op` string and `params` object are separate arguments.
 
 ---
 
@@ -223,3 +217,41 @@ async function main() {
 
 main()
 ```
+
+---
+
+## Browser pry()
+
+Drop a trigger in browser-side code (React, Vue, Svelte, etc.). When Chrome is launched with `--remote-debugging-port`, mypry attaches via CDP.
+
+```ts
+import { pry } from 'mypry/browser'
+
+// In a React component:
+useEffect(() => {
+  fetchData().then(data => {
+    pry({ message: 'after fetch' })  // pauses here in Chrome DevTools
+    setItems(data)
+  })
+}, [])
+```
+
+The `pry()` call emits a `debugger` statement. When mypry's frontend session is attached (via `--frontend` or `mypry open`), it pauses and gives you full eval/step/locals.
+
+---
+
+## Node.js pry()
+
+Inline trigger for Node.js scripts that don't start with `--inspect`:
+
+```ts
+// CJS
+const pry = require('mypry')
+pry()   // opens inspector with wait=true, blocks until mypry connects
+
+// ESM
+import { pry } from 'mypry'
+pry({ port: 9230, message: 'after DB query' })
+```
+
+Each `pry()` call re-opens the inspector, ensuring it always blocks — even on subsequent calls.
