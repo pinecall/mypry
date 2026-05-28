@@ -53,7 +53,7 @@ When the mypry MCP server is active, these tools are available:
 | `mcp_mypry_debugger_trace_stop` | — | Stop trace, return all hits |
 | `mcp_mypry_debugger_trace_status` | — | Peek at buffer without stopping |
 
-> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires daemon started with `--chrome`.
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry serve --frontend`.
 
 ---
 
@@ -107,8 +107,8 @@ When the mypry MCP server is active, these tools are available:
 ### 5. Frontend Debugging (Chrome CDP)
 
 ```bash
-# Setup: unified daemon with --chrome (backend + frontend in ONE session)
-mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
+# Setup: unified daemon (backend + frontend in ONE session)
+mypry serve --frontend http://localhost:3001
 ```
 
 ```
@@ -209,7 +209,7 @@ curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"continue"}
 
 6. **Global eval works when not paused** — `debugger_eval` falls back to `Runtime.evaluate` (global scope). Use it to query DOM, install interceptors, or check globals on a running process.
 
-7. **Frontend debugging via `--chrome`** — unified daemon connects to both Node.js (:9229) and Chrome (:9222). Use `target: "frontend"` on any tool to route to the browser.
+7. **Frontend debugging via `--frontend`** — unified daemon connects to both Node.js (:9229) and Chrome (:9222). Use `target: "frontend"` on any tool to route to the browser.
 
 ## Architecture
 
@@ -219,7 +219,7 @@ Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CD
 ```
 
 - **MCP Bridge** (`mcp-bridge.js`): stateless proxy, starts instantly, never blocks
-- **mypry daemon** (`mypry attach --http-only`): connects to V8 inspector, manages CDP, auto-reconnects
+- **mypry daemon** (`mypry serve`): connects to V8 inspector, manages CDP, auto-reconnects
 
 ### Setup
 
@@ -227,10 +227,10 @@ Antigravity → (stdio) → MCP Bridge → (HTTP :3098) → mypry daemon → (CD
 
 ```bash
 # Backend only
-mypry attach --http-only --port 9229 --http=3098 --workers
+mypry serve
 
 # Fullstack (backend + Chrome)
-mypry attach --http-only --port 9229 --http=3098 --workers --chrome http://localhost:3001
+mypry serve --frontend http://localhost:3001
 ```
 
 > Aurora's TUI starts its own debugger on :3099. For standalone debugging, use :3098.
@@ -267,7 +267,7 @@ Same bridge architecture:
 
 ```bash
 # Start daemon, then use curl
-mypry attach --http-only --http=3098 --workers
+mypry serve
 curl http://localhost:3098/state
 ```
 
@@ -276,5 +276,5 @@ curl http://localhost:3098/state
 ## Prerequisites
 
 - Target process running with `--inspect` (Aurora backend does this automatically)
-- mypry daemon running: `mypry attach --http-only --http=3098 --workers`
+- mypry daemon running: `mypry serve`
 - mypry installed: `npm link` from `~/mypry`

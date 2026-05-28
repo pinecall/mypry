@@ -36,7 +36,7 @@ node --inspect examples/tutorial-server.cjs
 ### Start the daemon
 
 ```bash
-mypry attach --http-only --http=3098 --workers
+mypry serve
 ```
 
 You should see:
@@ -400,7 +400,7 @@ mypry connects to Chrome's DevTools Protocol for frontend debugging — same too
 
 ```bash
 # One daemon handles both backend (:9229) and Chrome (:9222)
-mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
+mypry serve --frontend http://localhost:3001
 ```
 
 Use `target: "frontend"` on any tool to route to Chrome. Default is backend.
@@ -498,8 +498,8 @@ When the process is running, `debugger_eval` uses `Runtime.evaluate` for global 
 ### Pattern 5: Frontend → Backend handoff (ONE daemon, `target` param)
 
 ```bash
-# Setup: single daemon with --chrome
-mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
+# Setup: single daemon
+mypry serve --frontend http://localhost:3001
 ```
 
 ```
@@ -541,7 +541,7 @@ mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
 | `debugger_trace_status` | — | No | Peek at trace buffer |
 | `debugger_workers` | — | No | List worker threads |
 
-> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry attach --chrome`.
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry serve --frontend`.
 
 ---
 

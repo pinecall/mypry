@@ -140,7 +140,7 @@ This launches Chrome with `--remote-debugging-port=9222`. Any `debugger` stateme
 ### 3. Attach
 
 ```bash
-mypry attach --chrome    # connects to both backend (9229) and Chrome (9222)
+mypry attach --frontend    # connects to both backend (9229) and Chrome (9222)
 ```
 
 When a frontend `debugger` fires, the REPL shows your component code:
@@ -175,7 +175,7 @@ This works for **any framework** — the Vue/Pinia checks are harmless no-ops fo
 ### Fullstack (backend + frontend in one REPL)
 
 ```bash
-mypry attach --chrome
+mypry attach --frontend
 ```
 
 Click a button → backend pauses → inspect → `continue` → frontend pauses → inspect → `continue`. The REPL labels each pause:
@@ -277,7 +277,7 @@ data: {"timestamp":1779905774582,"file":"auth.service.ts","line":136,...}
 Debug `worker_threads` alongside the main thread:
 
 ```bash
-mypry attach --workers --http-only   # discover and attach to all workers
+mypry serve                         # daemon with worker support
 ```
 
 ```bash
@@ -313,8 +313,8 @@ Start with any transport or standalone:
 
 ```bash
 mypry attach --http              # alongside REPL
-mypry attach --http-only         # standalone API (no REPL)
-mypry attach --http=4000         # custom port (default: 3099)
+mypry serve         # standalone API (no REPL)
+mypry serve --port 4000           # custom port (default: 3098)
 mypry attach --http --token s3cr3t  # with bearer auth
 ```
 
@@ -675,13 +675,13 @@ AI Agent → (stdio) → MCP Bridge → (HTTP) → mypry daemon → (CDP) → No
 ```
 
 - **MCP Bridge** (`mcp-bridge.js`) — stateless proxy, starts instantly, never blocks
-- **mypry daemon** (`mypry attach --http-only`) — connects to V8 inspector, manages CDP
+- **mypry daemon** (`mypry serve`) — connects to V8 inspector, manages CDP
 
 #### 1. Start the daemon
 
 ```bash
 # Standalone (default port 3098)
-mypry attach --http-only --port 9229 --http=3098 --workers
+mypry serve
 
 # For Aurora TUI (already runs on :3099)
 # No extra daemon needed — set MYPRY_URL instead
@@ -743,7 +743,7 @@ mypry attach --http-only --port 9229 --http=3098 --workers
 | `debugger_trace_status` | Peek at trace buffer without stopping |
 | `debugger_workers` | List worker threads with session IDs |
 
-> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry attach --chrome`.
+> **All tools** accept an optional `target` param: `"frontend"` routes to Chrome CDP, `"backend"` (default) routes to Node.js. Requires `mypry attach --frontend`.
 
 ### Web UI
 
@@ -754,7 +754,7 @@ A ready-to-use web debugger UI is included:
 node --inspect examples/tutorial-server.cjs
 
 # 2. Start daemon
-mypry attach --http-only --http=3098 --workers
+mypry serve
 
 # 3. Open the UI
 open examples/web-debugger.html
@@ -784,7 +784,7 @@ mypry automatically resolves source maps — `state`, `backtrace`, and `source` 
 
 ```bash
 # One daemon, two targets
-mypry attach --http-only --port 9229 --http=3098 --chrome http://localhost:3001
+mypry serve --frontend http://localhost:3001
 ```
 
 Use `target: "frontend"` to route commands to Chrome:
@@ -821,32 +821,35 @@ Install interceptors to catch specific requests:
 mypry - inline debugger for Node.js and the browser
 
 Commands:
-  mypry attach [options]   Attach to a running process
-  mypry open [URL]         Launch Chrome with debugger port
-  mypry inject <PID>       Enable inspector on running Node.js process
+  mypry serve [options]   HTTP daemon for AI agents (recommended)
+  mypry attach [options]  Interactive REPL debugger
+  mypry watch [--port]    Monitor agent activity in realtime
+  mypry open [URL]        Launch Chrome with debugger port
+  mypry inject <PID>      Enable inspector on a running Node.js process
 
-Attach options:
-  --port PORT        V8 inspector port (default: 9229)
-  --host HOST        Inspector host (default: 127.0.0.1)
-  --url WS_URL       Direct WebSocket URL
-  --json             ndjson stdio transport
-  --mcp              MCP server on stdio (direct, blocks on connect)
-  --http[=PORT]      HTTP API server (default: 3099)
-  --http-only        HTTP only, no stdio transport (daemon mode)
-  --token TOKEN      Bearer token for HTTP auth (or 'tok1:rw,tok2:ro')
-  --workers          Discover and attach to worker threads
-  --chrome           Also launch Chrome for frontend debugging
+Serve options (daemon mode):
+  --port PORT             HTTP API port (default: 3098)
+  --inspect PORT          Backend inspector port (default: 9229)
+  --frontend URL          Also connect Chrome for fullstack debugging
+  --token TOKEN           Bearer token for HTTP auth
+
+Attach options (interactive REPL):
+  --port PORT             V8 inspector port (default: 9229)
+  --host HOST             Inspector host (default: 127.0.0.1)
+  --url WS_URL            Direct WebSocket URL
+  --json                  ndjson stdio transport
+  --mcp                   MCP server on stdio
+  --frontend URL          Also launch Chrome for frontend debugging
 
 Examples:
-  mypry open                                  # launch Chrome debug
-  mypry open http://localhost:5173            # explicit dev server
-  mypry attach                               # backend REPL
-  mypry attach --chrome                      # backend + frontend
-  mypry attach --json                        # ndjson for embedders
-  mypry attach --http-only --http=3098       # daemon mode (for MCP bridge)
-  mypry attach --http-only --workers         # daemon + workers
-  mypry attach --http --token admin:rw,ro:ro # multi-token auth
-  mypry inject 12345                         # inject into running process
+  mypry serve                                    # backend daemon on :3098
+  mypry serve --frontend http://localhost:3001    # fullstack daemon
+  mypry serve --port 3099 --inspect 9229         # custom ports
+  mypry watch                                    # monitor agent ops in realtime
+  mypry attach                                   # backend REPL
+  mypry attach --frontend http://localhost:3001   # REPL + frontend
+  mypry open http://localhost:5173                # launch Chrome for debugging
+  mypry inject 12345                              # enable inspector on PID
 ```
 
 ## Architecture
@@ -880,7 +883,7 @@ AI Agent Integration:
   ┌──────────┐  stdio   ┌───────────┐  HTTP   ┌────────────┐   CDP    ┌─────────┐
   │ Claude   │─────────│ MCP Bridge │────────│ mypry      │────────│ Node.js │
   │ Antigrav │          │ (instant)  │ :3098  │ daemon     │ :9229  │ process │
-  │ Cursor   │          │ stateless  │        │ --http-only│        │ --inspect│
+  │ Cursor   │          │ stateless  │        │ serve      │        │ --inspect│
   └──────────┘          └───────────┘         └────────────┘        └─────────┘
 ```
 
@@ -914,7 +917,7 @@ Covers: state, eval, backtrace, source, breakpoints, step (over/into/out), conti
 ## Requirements
 
 - Node.js ≥ 22
-- Chrome or Chromium (for `--chrome` / `open`)
+- Chrome or Chromium (for ``--frontend` / `open`)
 
 ## License
 
