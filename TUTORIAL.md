@@ -355,6 +355,94 @@ Pauses wherever execution happens to be. Useful for inspecting stuck or slow pro
 
 ---
 
+## Feature 7: Source Map Resolution (TypeScript)
+
+mypry automatically resolves source maps. If your project compiles TypeScript to JavaScript (NestJS, Next.js, etc.), the debugger shows the **original .ts file** and line numbers, not the compiled `dist/*.js`.
+
+### Example: NestJS auth service
+
+```
+→ debugger_state {}
+← {
+    "status": "paused",
+    "file": "/project/src/auth/auth.service.ts",    ← original TypeScript
+    "line": 151,                                      ← correct .ts line number
+    "function": "validateUser",
+    "source_window": [
+      {"line": 147, "text": "    this.logger.debug(`Password matches for ${emailAddress}`);"},
+      {"line": 149, "text": "    // eslint-disable-next-line no-debugger"},
+      {"line": 151, "text": "    debugger;", "current": true},
+      {"line": 153, "text": "    return user;"}
+    ]
+  }
+```
+
+Without source maps, the same pause would show `dist/auth/auth.service.js:136` with compiled JavaScript — useless for an agent trying to propose code edits.
+
+**Requirements:** Your `tsconfig.json` must have `"sourceMap": true` and the `.js.map` files must exist alongside the compiled `.js` files.
+
+---
+
+## Feature 8: Frontend Debugging (Chrome CDP)
+
+mypry connects to Chrome's DevTools Protocol for frontend debugging — same tools, same API.
+
+### Setup
+
+```bash
+# Start Chrome with debugging port
+mypry open http://localhost:3001
+
+# Start daemon pointing to Chrome
+mypry attach --http-only --port 9222 --http=3097
+```
+
+### Global eval (no pause needed)
+
+When the process is running, `debugger_eval` uses `Runtime.evaluate` for global scope access:
+
+```
+→ debugger_eval {"expr": "document.title"}
+← {"ok": true, "value": "ServiceHub"}
+
+→ debugger_eval {"expr": "window.location.href"}
+← {"ok": true, "value": "http://localhost:3001/login"}
+
+→ debugger_eval {"expr": "document.querySelectorAll('input').length"}
+← {"ok": true, "value": 3}
+```
+
+### Install an XHR/fetch interceptor
+
+```
+→ debugger_eval {"expr": "var _origSend = XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.send = function(body) { if (this._mypryUrl) { debugger; } return _origSend.apply(this, arguments); }; 'interceptor installed'"}
+← {"ok": true, "value": "interceptor installed"}
+```
+
+### Catch a login request
+
+```
+→ debugger_eval {"expr": "document.querySelector('#login-btn')?.click()"}
+
+(page pauses at XMLHttpRequest.send)
+
+→ debugger_state {}
+← {
+    "status": "paused",
+    "function": "XMLHttpRequest.send",
+    "locals": {
+      "body": "{\"emailAddress\":\"admin@test.com\",\"password\":\"secret\"}"
+    }
+  }
+
+→ debugger_eval {"expr": "JSON.parse(body)"}
+← {"ok": true, "value": {"emailAddress": "admin@test.com", "password": "secret"}}
+
+→ debugger_continue {}
+```
+
+---
+
 ## Agent Workflow Patterns
 
 ### Pattern 1: Debug a specific request
@@ -400,6 +488,23 @@ Pauses wherever execution happens to be. Useful for inspecting stuck or slow pro
 5. debugger_continue {}                  → resume
 ```
 
+### Pattern 5: Frontend → Backend handoff
+
+```
+# Frontend: intercept the API call
+1. debugger_eval {expr: "install XHR interceptor"}
+2. (user clicks login)
+3. debugger_state {}                     → paused at XMLHttpRequest.send
+4. debugger_eval {expr: "JSON.parse(body)"}  → see request payload
+5. debugger_continue {}                  → let request fly
+
+# Backend: catch the same request
+6. debugger_set_breakpoint {file: "auth.service.ts", line: 90, condition: "emailAddress === 'admin@test.com'"}
+7. debugger_state {}                     → paused in validateUser
+8. debugger_eval {expr: "user.role?.name"}  → inspect server-side
+9. debugger_continue {}
+```
+
 ---
 
 ## MCP Tools Quick Reference
@@ -407,7 +512,7 @@ Pauses wherever execution happens to be. Useful for inspecting stuck or slow pro
 | Tool | Params | Blocks? | Description |
 |------|--------|---------|-------------|
 | `debugger_state` | — | No | Current pause: file, line, function, locals, source |
-| `debugger_eval` | `expr`, `worker?` | No | Evaluate JS in paused scope |
+| `debugger_eval` | `expr`, `worker?` | No | Evaluate JS — paused: frame scope; running: global scope |
 | `debugger_continue` | — | **Yes** | Resume until next breakpoint (30s timeout) |
 | `debugger_step_over` | — | No | Next line, returns new state |
 | `debugger_step_into` | — | No | Enter function, returns new state |

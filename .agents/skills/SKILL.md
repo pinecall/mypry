@@ -25,8 +25,8 @@ When the mypry MCP server is active, these tools are available:
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `mcp_mypry_debugger_state` | — | Current pause state: file, line, function, locals, source window |
-| `mcp_mypry_debugger_eval` | `expr`, `worker?` | Evaluate JS expression in current scope |
+| `mcp_mypry_debugger_state` | — | Current pause: file (.ts via source maps), line, function, locals, source window |
+| `mcp_mypry_debugger_eval` | `expr`, `worker?` | Evaluate JS — paused: frame scope; running: global scope (Runtime.evaluate) |
 | `mcp_mypry_debugger_backtrace` | — | Call stack frames |
 | `mcp_mypry_debugger_source` | `file?` | Full source code of current file |
 | `mcp_mypry_debugger_list_breakpoints` | — | All active breakpoints |
@@ -38,7 +38,9 @@ When the mypry MCP server is active, these tools are available:
 | Tool | Params | Description |
 |------|--------|-------------|
 | `mcp_mypry_debugger_continue` | — | Resume execution. **BLOCKS** until next pause or termination |
-| `mcp_mypry_debugger_step` | `mode`: over/into/out | Step one line. Returns new state |
+| `mcp_mypry_debugger_step_over` | — | Step to next line, returns new state |
+| `mcp_mypry_debugger_step_into` | — | Step into function call, returns new state |
+| `mcp_mypry_debugger_step_out` | — | Step out of current function, returns new state |
 | `mcp_mypry_debugger_pause` | — | Force-pause a running process |
 | `mcp_mypry_debugger_set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint (optional condition) |
 | `mcp_mypry_debugger_remove_breakpoint` | `id` | Remove breakpoint by ID |
@@ -100,6 +102,26 @@ When the mypry MCP server is active, these tools are available:
    → eval in specific worker's scope
 ```
 
+### 5. Frontend Debugging (Chrome CDP)
+
+```bash
+# Setup: start daemon pointing to Chrome's debug port
+mypry attach --http-only --port 9222 --http=3097
+```
+
+```
+1. mcp_mypry_debugger_eval {expr: "document.title"}
+   → eval runs globally (Runtime.evaluate) — no pause needed
+2. mcp_mypry_debugger_eval {expr: "install XHR interceptor with debugger;"}
+   → any XHR to /auth/ will trigger a pause
+3. (user clicks login button)
+4. mcp_mypry_debugger_state
+   → paused at XMLHttpRequest.send, locals: {body: '{"emailAddress":"..."}'}
+5. mcp_mypry_debugger_eval {expr: "JSON.parse(body)"}
+   → inspect the request payload
+6. mcp_mypry_debugger_continue
+```
+
 ---
 
 ## HTTP API Fallback
@@ -146,7 +168,11 @@ curl -s -X POST http://localhost:3099/api/debugger/command -d '{"op":"continue"}
 
 4. **Workers don't have separate ports** — they're accessed via the `worker` parameter on eval/state/continue commands.
 
-5. **Source maps work** — breakpoints set on `.ts` files resolve to the correct compiled JS lines.
+5. **Source maps are automatic** — TypeScript projects show `src/auth/auth.service.ts:151` instead of `dist/auth/auth.service.js:136`. Source window shows original .ts source code. Requires `"sourceMap": true` in tsconfig.
+
+6. **Global eval works when not paused** — `debugger_eval` falls back to `Runtime.evaluate` (global scope). Use it to query DOM, install interceptors, or check globals on a running process.
+
+7. **Frontend debugging via Chrome CDP** — connect daemon to Chrome's debug port (`--port 9222`). Same tools work: eval, pause, breakpoints, step.
 
 ## Architecture
 

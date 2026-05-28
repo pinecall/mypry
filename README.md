@@ -726,8 +726,8 @@ mypry attach --http-only --port 9229 --http=3098 --workers
 
 | Tool | Description |
 |------|-------------|
-| `debugger_state` | Current pause: file, line, function, locals, source window |
-| `debugger_eval` | Evaluate JS expression in scope (supports `worker` param) |
+| `debugger_state` | Current pause: file (.ts via source maps), line, function, locals, source window |
+| `debugger_eval` | Evaluate JS — paused: frame scope; running: global scope |
 | `debugger_continue` | Resume — **blocks** until next breakpoint |
 | `debugger_step_over` | Step to next line, returns new state |
 | `debugger_step_into` | Step into function call |
@@ -761,6 +761,37 @@ open examples/web-debugger.html
 The web UI connects to the daemon's HTTP API and SSE stream. Use it as a starting point for building custom debugger UIs (like Aurora's TUI, but for the browser).
 
 Features: source view with current-line highlighting, locals panel, call stack, breakpoint management, step/continue/pause controls, eval bar, and live SSE updates.
+
+### Source Maps
+
+mypry automatically resolves source maps for TypeScript projects:
+
+- `dist/auth/auth.service.js:136` → `src/auth/auth.service.ts:151`
+- Source window shows original TypeScript source, not compiled JS
+- Requires `"sourceMap": true` in `tsconfig.json`
+
+### Frontend Debugging (Chrome CDP)
+
+```bash
+# Start Chrome with debug port
+mypry open http://localhost:3001
+
+# Start daemon pointing to Chrome
+mypry attach --http-only --port 9222 --http=3097
+```
+
+`debugger_eval` works without pausing (uses `Runtime.evaluate`):
+```
+→ debugger_eval {"expr": "document.title"}
+← {"ok": true, "value": "MyApp"}
+```
+
+Install interceptors to catch specific requests:
+```
+→ debugger_eval {"expr": "...XMLHttpRequest.prototype.send = function(body) { if (this._url.includes('/auth/')) { debugger; } ... }"}
+→ (user clicks login)
+→ debugger_state {} → paused at XMLHttpRequest.send, locals: {body: '{"email":"..."}' }
+```
 
 
 ## CLI Reference
