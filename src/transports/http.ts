@@ -39,6 +39,7 @@ export interface HttpServerOptions {
 export interface HttpServer {
   port: number
   close: () => Promise<void>
+  events: EventEmitter
 }
 
 export async function startHttpServer(
@@ -53,13 +54,15 @@ export async function startHttpServer(
 
   // Track SSE clients for event streaming
   const sseClients = new Set<http.ServerResponse>()
+  const events = new EventEmitter()
 
-  // Wire up debugger events → SSE
+  // Wire up debugger events → SSE + local emitter
   function pushSSE(event: string, data: any) {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
     for (const client of sseClients) {
       try { client.write(payload) } catch { sseClients.delete(client) }
     }
+    events.emit(event, data)
   }
 
   session.cdp.on('Debugger.paused', async () => {
@@ -251,6 +254,7 @@ export async function startHttpServer(
   return {
     port,
     close: () => new Promise(r => server.close(() => r())),
+    events,
   }
 }
 

@@ -652,7 +652,59 @@ async function main(): Promise<void> {
   }
 
   if (values['http-only']) {
-    // No stdio transport — just keep HTTP running
+    // Serve mode — also display live watch output
+    if (httpServer) {
+      const DIM = '\x1b[2m', RESET = '\x1b[0m', BOLD = '\x1b[1m'
+      const GREEN = '\x1b[32m', YELLOW = '\x1b[33m', RED = '\x1b[31m'
+      const CYAN = '\x1b[36m', BLUE = '\x1b[34m', MAGENTA = '\x1b[35m'
+      const ts = () => `${DIM}${new Date().toLocaleTimeString('en-GB')}${RESET}`
+
+      process.stderr.write(`${DIM}─────────────────────────────────────────${RESET}\n`)
+
+      httpServer.events.on('paused', (d: any) => {
+        const fn = d.function || '?'
+        const file = d.file?.split('/').pop() || '?'
+        process.stderr.write(`${ts()} ${YELLOW}⏸${RESET}  ${YELLOW}paused${RESET} at ${BOLD}${fn}${RESET} ${DIM}${file}:${d.line}${RESET}\n`)
+        if (d.locals) {
+          const keys = Object.keys(d.locals).slice(0, 5)
+          if (keys.length) {
+            process.stderr.write(`${DIM}          locals: ${keys.map((k: string) => `${k}=${JSON.stringify(d.locals[k]).substring(0, 40)}`).join(', ')}${RESET}\n`)
+          }
+        }
+      })
+      httpServer.events.on('resumed', () => {
+        process.stderr.write(`${ts()} ${GREEN}▶${RESET}  ${GREEN}resumed${RESET}\n`)
+      })
+      httpServer.events.on('disconnected', () => {
+        process.stderr.write(`${ts()} ${RED}✗${RESET}  ${RED}disconnected${RESET}\n`)
+      })
+      httpServer.events.on('op', (d: any) => {
+        const target = d.target === 'frontend' ? `${MAGENTA}fe${RESET}` : `${BLUE}be${RESET}`
+        const params = d.params || {}
+        const extras: string[] = []
+        if (params.expr) extras.push(`"${params.expr.substring(0, 50)}"`)
+        if (params.file) extras.push(params.file)
+        if (params.line) extras.push(`L${params.line}`)
+        process.stderr.write(`${ts()} ${CYAN}→${RESET} ${target} ${BOLD}${d.op}${RESET}${extras.length ? ' ' + extras.join(' ') : ''}\n`)
+      })
+      httpServer.events.on('op-result', (d: any) => {
+        const target = d.target === 'frontend' ? `${MAGENTA}fe${RESET}` : `${BLUE}be${RESET}`
+        const r = d.result || {}
+        if (r.error) {
+          process.stderr.write(`${ts()} ${RED}←${RESET} ${target} ${RED}${r.error}${RESET}\n`)
+        } else if (r.status === 'paused') {
+          process.stderr.write(`${ts()} ${YELLOW}←${RESET} ${target} ${YELLOW}paused${RESET} ${DIM}${r.file?.split('/').pop()}:${r.line}${RESET}\n`)
+        } else if (r.status === 'running') {
+          process.stderr.write(`${ts()} ${GREEN}←${RESET} ${target} ${GREEN}running${RESET}\n`)
+        } else if (r.ok !== undefined || r.value !== undefined) {
+          const val = r.value !== undefined ? JSON.stringify(r.value).substring(0, 80) : 'ok'
+          process.stderr.write(`${ts()} ${GREEN}←${RESET} ${target} ${DIM}=${RESET} ${val}\n`)
+        }
+      })
+      httpServer.events.on('trace', (d: any) => {
+        process.stderr.write(`${ts()} ${DIM}trace${RESET} ${d.function || '?'} ${DIM}${d.file?.split('/').pop()}:${d.line}${RESET}\n`)
+      })
+    }
     await new Promise(() => {}) // block forever
   } else if (values.mcp) {
     await runMcp(backendSession, {
