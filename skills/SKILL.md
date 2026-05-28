@@ -50,7 +50,7 @@ That's it. Defaults to `http://127.0.0.1:3098`.
 | Cursor | `.cursor/mcp.json` → `mcpServers` |
 | Codex (OpenAI) | `codex.json` → `mcpServers` |
 
-If the daemon runs on a **non-default port**, set the URL:
+If the daemon runs on a **non-default port** or behind a **TUI proxy**, set the URL:
 
 ```json
 {
@@ -60,6 +60,8 @@ If the daemon runs on a **non-default port**, set the URL:
   }
 }
 ```
+
+> **TUI proxy users:** If your project uses a TUI that embeds mypry (e.g. a startup script that manages the CDP connection), you **must** set `MYPRY_URL` to the TUI's debugger endpoint. The default `:3098` won't reach it.
 
 ---
 
