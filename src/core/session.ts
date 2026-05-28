@@ -12,6 +12,7 @@ type PauseListener = (params: unknown) => void
 interface ScriptEntry {
   url: string
   source: string | null
+  sourceMapURL?: string
 }
 
 interface BreakpointEntry {
@@ -54,7 +55,7 @@ export class DebuggerSession {
 
   async init(): Promise<void> {
     this.cdp.on('Debugger.scriptParsed', (p: any) => {
-      this.scripts.set(p.scriptId, { url: p.url, source: null })
+      this.scripts.set(p.scriptId, { url: p.url, source: null, sourceMapURL: p.sourceMapURL })
     })
     this.cdp.on('Debugger.paused', (p: unknown) => {
       this.currentPause = p
@@ -196,15 +197,115 @@ export class DebuggerSession {
 
   async setBreakpoint(filePattern: string, line: number, condition?: string): Promise<number> {
     // line is 1-based from user, CDP uses 0-based
+    const lineNumber = line - 1
+    const isTS = /\.tsx?$/.test(filePattern)
+
+    // For TypeScript files, we need to:
+    // 1. Find the compiled .js script whose source map points to our .ts file
+    // 2. Reverse-map the TS line → JS line using the source map
+    // 3. Set the breakpoint on the .js file at the mapped line
+    if (isTS) {
+      const resolved = await this._resolveSourceMapBreakpoint(filePattern, lineNumber)
+      if (resolved) {
+        const params: Record<string, unknown> = {
+          lineNumber: resolved.jsLine,
+          urlRegex: resolved.jsUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        }
+        if (condition) params.condition = condition
+        const r = await this.cdp.send('Debugger.setBreakpointByUrl', params) as any
+        const id = ++this._nextBpId
+        this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId, condition })
+        return id
+      }
+    }
+
+    // Fallback: direct regex match (works for .js files and Vite/ESM where URLs match)
+    const escaped = filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const params: Record<string, unknown> = {
-      lineNumber: line - 1,
-      urlRegex: filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      lineNumber,
+      urlRegex: escaped,
     }
     if (condition) params.condition = condition
     const r = await this.cdp.send('Debugger.setBreakpointByUrl', params) as any
     const id = ++this._nextBpId
     this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId, condition })
     return id
+  }
+
+  /**
+   * Resolve a TypeScript breakpoint to compiled JS coordinates.
+   * Finds the .js script whose source map references our .ts file,
+   * then reverse-maps the TS line to the JS line.
+   */
+  private async _resolveSourceMapBreakpoint(
+    tsFile: string,
+    tsLine0: number,
+  ): Promise<{ jsUrl: string; jsLine: number } | null> {
+    // Normalize: "auth.service.ts" or "src/auth/auth.service.ts"
+    const tsBasename = tsFile.replace(/^.*[\\/]/, '')
+
+    // Find a script whose source map references this .ts file
+    for (const [scriptId, entry] of this.scripts) {
+      if (!entry.sourceMapURL || !entry.url) continue
+      // Only check .js files
+      if (!/\.js(\?.*)?$/.test(entry.url)) continue
+
+      try {
+        // Resolve source map URL (can be relative to script URL or inline)
+        let mapContent: string | null = null
+
+        if (entry.sourceMapURL.startsWith('data:')) {
+          // Inline source map
+          const b64 = entry.sourceMapURL.split(',')[1]
+          mapContent = Buffer.from(b64, 'base64').toString()
+        } else {
+          // File-based source map — read from disk
+          const { readFileSync } = await import('fs')
+          const { resolve, dirname } = await import('path')
+
+          // Script URL is file:// or absolute path
+          let scriptPath = entry.url.replace(/^file:\/\//, '')
+          // Handle Windows-style paths
+          if (process.platform === 'win32' && scriptPath.startsWith('/'))
+            scriptPath = scriptPath.slice(1)
+
+          const mapPath = resolve(dirname(scriptPath), entry.sourceMapURL)
+          mapContent = readFileSync(mapPath, 'utf8')
+        }
+
+        if (!mapContent) continue
+
+        const rawMap = JSON.parse(mapContent)
+        // Check if any source in the map matches our TS file
+        const sources: string[] = rawMap.sources || []
+        const matchIdx = sources.findIndex((s: string) => {
+          const sBasename = s.replace(/^.*[\\/]/, '')
+          return sBasename === tsBasename || s.endsWith(tsFile) || tsFile.endsWith(s)
+        })
+        if (matchIdx === -1) continue
+
+        // Found it! Now reverse-map the TS line to JS line using source-map
+        const { SourceMapConsumer } = await import('source-map')
+        const consumer = await new SourceMapConsumer(rawMap)
+        try {
+          // Find the generated position for this original position
+          const gen = consumer.generatedPositionFor({
+            source: sources[matchIdx],
+            line: tsLine0 + 1, // source-map lib uses 1-based
+            column: 0,
+          })
+          if (gen.line != null) {
+            return { jsUrl: entry.url, jsLine: gen.line - 1 } // back to 0-based
+          }
+        } finally {
+          consumer.destroy()
+        }
+      } catch {
+        // Skip this script if source map can't be read/parsed
+        continue
+      }
+    }
+    return null
   }
 
   async removeBreakpoint(id: number): Promise<void> {
