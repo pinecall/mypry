@@ -291,7 +291,7 @@ await kit.call('debugger_disconnect')
 | Document | Description |
 |----------|-------------|
 | [**Programmatic API**](docs/programmatic-api.md) | `DebuggerToolKit`, `CDPClient`, `DebuggerSession` — for custom integrations |
-| [**skills/SKILL.md**](skills/SKILL.md) | Drop-in AI agent skill |
+| [**Architecture**](docs/architecture.md) | Internals: breakpoint resolution, Turbopack, AgentScript pipeline |
 
 ---
 
