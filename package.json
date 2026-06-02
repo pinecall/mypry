@@ -1,6 +1,6 @@
 {
   "name": "mypry",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Fullstack debugger for AI agents — debug Node.js + browser via MCP",
   "author": "Pinecall",
   "license": "MIT",
