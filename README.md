@@ -82,16 +82,34 @@ debugger_continue
 
 ---
 
-## Tested frameworks
+## Two ways to pause
 
-| Framework | Backend debugging | Browser debugging | Hot-reload safe | Source maps |
-|-----------|:-:|:-:|:-:|:-:|
-| **Express / Fastify** | ✅ | N/A | N/A | N/A (plain JS) |
-| **Vite** | N/A | ✅ | N/A | N/A |
-| **Next.js (Turbopack)** | ✅ | ✅ | ✅ | ✅ (chunk offset) |
-| **Remix (React Router v7)** | ✅ | ✅ | — | ✅ (Vite inline) |
+### `debugger_set_breakpoint` — no code changes
 
-> **Express** — basic, multi, and conditional breakpoints. **Next.js** — breakpoints survive Turbopack hot-reload. **Remix** — breakpoints in loaders/actions show **original TypeScript** in the source window.
+The agent sets a breakpoint by file and line. **No edits, no restart, no hot-reload needed.** The app pauses the next time that line executes.
+
+```
+debugger_set_breakpoint { file: "auth.ts", line: 47 }
+# trigger the code path...
+debugger_state → paused at auth.ts:47, locals visible
+```
+
+This is the recommended approach — the agent doesn't touch your source code.
+
+### `debugger` statement — simplest
+
+The agent can also edit your code and drop a `debugger;` statement. When the inspector is connected and Node.js hits it, the app pauses automatically — no `set_breakpoint` call needed.
+
+```js
+// Agent adds this line:
+debugger;
+```
+
+```
+debugger_state → paused at the debugger; line, locals visible
+```
+
+Both approaches work. `set_breakpoint` is cleaner (no file edits). `debugger;` is simpler (the agent already knows how to edit code).
 
 ---
 
