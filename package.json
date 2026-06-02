@@ -1,7 +1,7 @@
 {
   "name": "mypry",
-  "version": "0.1.0-beta.3",
-  "description": "The interactive full-stack debugger for AI agents — pause, step, and inspect across Node.js and Chrome via MCP",
+  "version": "0.1.0-beta.5",
+  "description": "Fullstack debugger for AI agents — debug Node.js + browser via MCP",
   "author": "Pinecall",
   "license": "MIT",
   "homepage": "https://github.com/pinecall/mypry#readme",
@@ -14,50 +14,37 @@
   },
   "keywords": [
     "debugger",
-    "pry",
+    "mcp",
     "node",
     "browser",
     "cdp",
-    "mcp",
-    "http",
     "ai",
     "agent",
-    "repl"
+    "fullstack",
+    "playwright"
   ],
   "type": "module",
-  "main": "./lib/pry.cjs",
-  "types": "./dist/pry.d.ts",
+  "main": "./dist/fullstack-toolkit.js",
+  "types": "./dist/fullstack-toolkit.d.ts",
   "bin": {
-    "mypry": "bin/mypry",
     "mypry-bridge": "dist/mcp-bridge.js"
   },
   "exports": {
     ".": {
-      "require": "./lib/pry.cjs",
-      "import": "./dist/pry.js",
-      "types": "./dist/pry.d.ts"
+      "import": "./dist/fullstack-toolkit.js",
+      "types": "./dist/fullstack-toolkit.d.ts"
     },
     "./core": {
       "import": "./dist/core/index.js",
       "types": "./dist/core/index.d.ts"
     },
-    "./browser": {
-      "import": "./dist/browser.js",
-      "types": "./dist/browser.d.ts"
-    },
-    "./mcp": {
-      "import": "./dist/transports/mcp.js",
-      "types": "./dist/transports/mcp.d.ts"
-    },
-    "./http": {
-      "import": "./dist/transports/http.js",
-      "types": "./dist/transports/http.d.ts"
+    "./toolkit": {
+      "import": "./dist/fullstack-toolkit.js",
+      "types": "./dist/fullstack-toolkit.d.ts"
     }
   },
   "files": [
     "dist",
-    "bin",
-    "lib",
     "skills",
     "README.md",
     "LICENSE"
@@ -67,10 +54,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "watch": "tsc -p tsconfig.json --watch",
-    "test": "npm run test:suite",
-    "test:suite": "tsc -p tsconfig.test.json && node --test dist-test/test/ndjson-contract.test.js",
-    "test:integration": "tsc -p tsconfig.test.json && node --test dist-test/test/fullstack-integration.test.js"
+    "watch": "tsc -p tsconfig.json --watch"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -78,6 +62,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "playwright": ">=1.52",
     "source-map": "^0.7.6"
   }
 }

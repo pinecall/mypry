@@ -27,25 +27,17 @@ AI coding agents are great at reading code and guessing. They're blind at runtim
 
 A real bug lives in *both*: the button click, the request payload, the handler, the DB call. mypry is the only debugger that lets an agent **follow one request from the browser click into the backend handler — pausing, stepping and evaluating live on both sides — inside a single session.**
 
-It also ships with a **non-blocking trace mode**, so your agent can observe many executions without ever freezing the app.
-
 ---
 
-## Quick start (with an AI agent, 60 seconds)
+## Quick start (60 seconds)
 
 **1. Run your app with the inspector open.**
 
 ```bash
-node --inspect server.js        # backend on :9229
+node --inspect server.js
 ```
 
-**2. Start the mypry daemon.**
-
-```bash
-mypry serve                     # HTTP daemon on :3098
-```
-
-**3. Point your agent at it.** Add mypry to your agent's MCP config (Claude Code shown — see [MCP setup](#mcp-setup) for Cursor / Antigravity):
+**2. Point your agent at mypry.** Add to your MCP config:
 
 ```json
 {
@@ -57,217 +49,60 @@ mypry serve                     # HTTP daemon on :3098
 }
 ```
 
-**4. Drop a `debugger` in your code and trigger it.** Your agent now has live tools:
+**3. Your agent now has live debugging tools.**
 
 ```
 You:    Why is the admin login returning a 403?
-Agent:  [debugger_set_breakpoint] auth.service.ts:151  condition: email === "admin@test.com"
-        [debugger_state]   → paused, locals: { user, isMatch: false }
-        [debugger_eval]    → user.role  →  "viewer"
+Agent:  [debugger_connect]         { port: 9229 }
+        [debugger_set_breakpoint]  auth.service.ts:151  condition: email === "admin@test.com"
+        [debugger_state]           → paused, locals: { user, isMatch: false }
+        [debugger_eval]            → user.role  →  "viewer"
         The role is "viewer", not "admin" — bcrypt matched but the role check fails.
 ```
 
-> 📖 **New here? Start with the [hands-on TUTORIAL](TUTORIAL.md)** — every feature, one running example, pure MCP.
-
 ---
 
-## The one idea that matters: one session, both sides
+## The one idea: one session, both sides
 
-Run a single daemon that owns **both** the Node inspector (`:9229`) and a Chrome tab (`:9222`). Every tool takes an optional `target` — `"backend"` (default) or `"frontend"` — so your agent walks a request end to end without switching tools or processes.
-
-```bash
-mypry serve --frontend http://localhost:5173
-```
+Connect to **both** the Node inspector and a Playwright browser. Every eval takes an optional `target` — `"backend"` (default) or `"browser"` — so your agent walks a request end to end without switching tools or processes.
 
 ```
-# Frontend: catch the outgoing request
-debugger_state   { target: "frontend" }   → paused in Login.vue, locals: { body: '{"email":"admin@test.com"}' }
-debugger_continue{ target: "frontend" }    → request flies to the backend
+debugger_connect { port: 9229, frontend: "http://localhost:5173" }
 
-# Backend: catch the same request (same session, no target = backend)
-debugger_state   {}                        → paused at auth.service.ts:147  (source-mapped from dist/)
-debugger_eval    { expr: "user.role" }     → "viewer"
-```
+# Frontend: fill the form and submit
+debugger_snapshot                          → ARIA tree: textbox "Email", button "Sign In"
+debugger_browse { script: "fill \"textbox Email\" \"admin@test.com\"\nclick \"button Sign in\"" }
+  → backend: paused at auth.service.ts:151
 
-> **Any frontend framework works** — React, Vue, Angular, Svelte, plain JS. mypry debugs whatever runs in Chrome via CDP.
-
-No other maintained tool does interactive step-debugging on **both** the frontend and the backend in one session. That's the whole point.
-
----
-
-## Two ways to debug
-
-mypry gives your agent two complementary modes. Pick per situation:
-
-| Mode | What it does | Use when |
-|------|--------------|----------|
-| **Interactive** | Pause at a breakpoint; step, eval, inspect the live frame. Blocks until you continue. | You need to deeply inspect **one** execution. |
-| **Trace** | Auto-resume at each hit and silently collect a snapshot (file, line, function, locals). The app never pauses. | You want to observe a pattern across **many** executions, or you don't want to freeze a live system. |
-
-```
-# Interactive
-debugger_set_breakpoint { file: "auth.service.ts", line: 151 }
-debugger_state {}                          → paused, full frame
-debugger_step_over {}                      → next line, new state
-debugger_continue {}
-
-# Trace (non-blocking)
-debugger_trace_start { maxBuffer: 100 }    → app keeps running
-... 50 requests happen ...
-debugger_trace_stop {}                     → { count: 50, hits: [ {locals, timestamp}, ... ] }
+# Backend: inspect the same request
+debugger_eval { expr: "user.role" }        → "viewer"
+debugger_eval { expr: "document.cookie", target: "browser" }  → "session=abc123"
+debugger_continue
 ```
 
 ---
 
-## Feature tour
+## Tested frameworks
 
-### Conditional breakpoints
+| Framework | Backend debugging | Browser debugging | Hot-reload safe | Source maps |
+|-----------|:-:|:-:|:-:|:-:|
+| **Express / Fastify** | ✅ | N/A | N/A | N/A (plain JS) |
+| **Vite** | N/A | ✅ | N/A | N/A |
+| **Next.js (Turbopack)** | ✅ | ✅ | ✅ | ✅ (chunk offset) |
+| **Remix (React Router v7)** | ✅ | ✅ | — | ✅ (Vite inline) |
 
-Only pause when it matters — every other execution runs uninterrupted.
-
-```
-debugger_set_breakpoint {
-  file: "auth.service.ts",
-  line: 151,
-  condition: "email === 'admin@test.com'"
-}
-```
-
-### Source maps (TypeScript, React, Vue), automatically
-
-`state`, `backtrace`, and `source` always show your **original** source, never compiled `dist/*.js`. Breakpoints on `.ts` / `.tsx` / `.vue` files are automatically resolved to the compiled output via source maps.
-
-| Pipeline | Without mypry | With mypry |
-|----------|---------------|------------|
-| **tsc** (NestJS) | `dist/auth/auth.service.js:135` | `src/auth/auth.service.ts:147` |
-| **Vite** (React) | `http://localhost:5173/src/App.tsx?t=123` | `src/App.tsx` |
-| **Vite** (Vue) | `http://localhost:5173/src/Login.vue?t=123` | `src/Login.vue` |
-
-> **Any Vite-served frontend works** — React (`.tsx`), Vue (`.vue`), Svelte, plain JS.
-> Vite dev mode emits inline source maps that mypry decodes automatically.
-> Backend needs `"sourceMap": true` in `tsconfig.json`.
-> `set_breakpoint("file.ts", line)` works — no need to know the compiled `.js` file or line number.
-
-### Framework-aware values
-
-`eval` returns clean data, not proxy soup. Works with **any framework** — Vue/Pinia unwrapping is automatic when detected, harmless otherwise:
-
-| Type | What you get back |
-|------|-------------------|
-| Vue `ref()` | auto-unwrapped `.value` |
-| Pinia store | auto-extracted `.$state` |
-| `reactive()` proxy | unwrapped via `__v_raw` |
-| Circular refs | `[Circular]` (no crash) |
-| React state, Angular, plain objects | returned as-is (no special handling needed) |
-
-### Worker threads
-
-Debug `worker_threads` alongside the main thread — no separate ports, no separate daemons.
-
-```
-debugger_workers {}                        → [{ sessionId: "1", title: "metrics" }, ...]
-debugger_eval { expr: "workerData", worker: "1" }
-```
-
-> `mypry serve` enables `--workers` by default.
-
-### Auto-reconnect
-
-Survives `nodemon`, NestJS `--watch`, and `ts-node-dev` restarts. The CDP socket drops, mypry reconnects (every 2s, up to 40s), and your breakpoints come back. Works across every transport.
-
-### Attach to anything
-
-| Situation | Command |
-|-----------|---------|
-| App started with `--inspect` | `mypry serve` |
-| Standalone script, no flag | `require('mypry')()` or `import { pry } from 'mypry'; pry()` |
-| Browser-side trigger | `import { pry } from 'mypry/browser'; pry()` |
-| Already-running process, no flag | `mypry inject <PID>` (sends `SIGUSR1`) |
-
-### Remote debugging
-
-Debug apps on staging servers, VMs, or containers from your machine. The daemon runs on the server, your agent connects over SSH tunnel.
-
-```bash
-# On the server
-node --inspect=127.0.0.1:9230 server.mjs
-mypry serve --host 0.0.0.0 --inspect 9230 --port 3099 --token s3cr3t
-
-# On your machine (SSH tunnel)
-ssh -L 3099:localhost:3099 user@server
-```
-
-Then point your MCP bridge at `http://127.0.0.1:3099`. Your agent debugs the remote process as if it were local:
-
-```
-→ debugger_set_breakpoint { file: "server.mjs", line: 12 }
-← { ok: true, id: 1 }
-
-(trigger request on the server)
-
-→ debugger_state {}
-← { status: "paused", file: "server.mjs", line: 12, function: "authenticate",
-    locals: { email: "berna@shipway.dev", isValid: true } }
-
-→ debugger_eval { expr: "user" }
-← { ok: true, value: { id: 3, name: "Berna", role: "superadmin" } }
-
-→ debugger_backtrace {}
-← { frames: [{ function: "authenticate", file: "server.mjs", line: 12 },
-             { function: "<anon>", file: "server.mjs", line: 42 }] }
-
-→ debugger_continue {}
-```
-
-For headless Chrome on the server, add `--chrome-host server:9222`. See the full [Remote Debugging Guide](docs/remote-debugging.md) for SSH tunnels, Docker, and security.
-
----
-
-## Project config (`.mypry.json`)
-
-Drop a `.mypry.json` in your project root. Then `mypry serve` picks it up automatically — zero flags.
-
-```json
-{
-  "port": 3098,
-  "inspect": 9229,
-  "frontend": "http://localhost:3001"
-}
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `port` | number | `3098` | HTTP API port |
-| `inspect` | number | `9229` | Backend V8 inspector port |
-| `frontend` | string | — | URL to open in debug Chrome (enables fullstack) |
-| `chromeHost` | string | — | Remote Chrome CDP `host:port` ([remote debugging](docs/remote-debugging.md)) |
-| `token` | string | — | Bearer token for HTTP auth |
-| `workers` | boolean | `true` | Discover worker threads |
-| `host` | string | `127.0.0.1` | Inspector / daemon host |
-
-CLI flags always take priority over the config file.
-
-```bash
-cd ~/my-project        # has .mypry.json with frontend set
-mypry serve            # loads config, launches Chrome, connects both
-```
+> **Express** — basic, multi, and conditional breakpoints. **Next.js** — breakpoints survive Turbopack hot-reload. **Remix** — breakpoints in loaders/actions show **original TypeScript** in the source window.
 
 ---
 
 ## MCP setup
 
-Start the daemon once, then add the bridge to your agent. The bridge is a stateless proxy that starts instantly and never blocks the agent's handshake — it talks to the daemon, which owns the CDP connection.
+mypry ships a **stdio MCP bridge** as its binary. No daemon, no config file — the agent's MCP runtime starts the process directly.
 
 ```
-AI Agent ── stdio ──▶ mcp-bridge.js ── HTTP ──▶ mypry daemon ── CDP ──▶ your app
-```
-
-**Daemon:**
-
-```bash
-mypry serve                                          # backend only
-mypry serve --frontend http://localhost:5173          # + frontend
-mypry serve --port 3099 --inspect 9230               # custom ports
+AI Agent ── stdio ──▶ mypry-bridge ── CDP ──▶ your app
+                          │
+                          └── Playwright ──▶ browser
 ```
 
 **Claude Code** — `~/.claude/mcp.json`:
@@ -275,220 +110,177 @@ mypry serve --port 3099 --inspect 9230               # custom ports
 ```json
 {
   "mcpServers": {
-    "mypry": {
-      "command": "mypry-bridge"
-    }
+    "mypry": { "command": "mypry-bridge" }
   }
 }
 ```
 
-**Cursor** — `~/.cursor/mcp.json`: same `mcpServers` block as above.
+**Cursor** — `~/.cursor/mcp.json`: same block.
 
-**Antigravity** — `~/.gemini/config/mcp_config.json`:
+**Antigravity** — settings or `mcp_config.json`:
 
 ```json
 {
-  "mypry": {
-    "command": "mypry-bridge"
-  }
+  "mypry": { "command": "mypry-bridge" }
 }
 ```
 
-> **Install:** `npm install -g mypry` makes `mypry-bridge` available globally.
-> For project-local installs, use `npx mypry-bridge` as the command instead.
->
-> **Remote:** Override the daemon URL with `"env": { "MYPRY_URL": "http://staging:3099" }`.
-> The default is `http://127.0.0.1:3098` — no env needed for local use.
-
-### MCP tools
-
-All tools accept an optional `target` (`"frontend"` / `"backend"`) and `worker`.
-
-| Tool | Blocks? | Description |
-|------|:------:|-------------|
-| `debugger_state` | no | Current pause: file, line, function, locals, source window |
-| `debugger_eval` | no | Evaluate JS — paused: frame scope; running: global scope |
-| `debugger_continue` | **yes** | Resume until the next breakpoint (30s timeout) |
-| `debugger_step_over` / `_into` / `_out` | no | Step; returns the new state |
-| `debugger_pause` | no | Force-pause a running process |
-| `debugger_set_breakpoint` | no | `file`, `line`, optional `condition` |
-| `debugger_remove_breakpoint` / `_list_breakpoints` | no | Manage breakpoints |
-| `debugger_backtrace` / `_source` | no | Call stack / full source (source-mapped) |
-| `debugger_trace_start` / `_stop` / `_status` | no | Non-blocking trace mode |
-| `debugger_workers` | no | List worker-thread sessions |
+> `npm install -g mypry` makes `mypry-bridge` available globally. For local installs, use `npx mypry-bridge`.
 
 ---
 
-## `mypry serve` — daemon + live monitor
+## Tools
 
-`mypry serve` runs the daemon **and** shows live watch output in the same terminal. No separate `mypry watch` needed:
+| Tool | Description |
+|------|-------------|
+| `debugger_connect` | Connect to V8 inspector + optionally launch a Playwright browser |
+| `debugger_disconnect` | Close everything |
+| `debugger_state` | Paused/running, file, line, function, locals, source window |
+| `debugger_set_breakpoint` | File + line, optional `condition`. Source maps handled automatically |
+| `debugger_breakpoints` | List or remove breakpoints |
+| `debugger_eval` | JS expression — `target: "backend"` (default) or `"browser"` |
+| `debugger_step` | Step over / into / out |
+| `debugger_continue` | Resume until next breakpoint |
+| `debugger_browse` | Drive the browser via [AgentScript](#agentscript) |
+| `debugger_snapshot` | ARIA accessibility tree — how the agent "sees" the page |
+| `debugger_inject` | Attach to a running process without `--inspect` |
+
+---
+
+## Modes
+
+### Backend only
 
 ```
-─────────────────────────────────────────
-13:06:30 → be set_breakpoint auth.service.ts L147
-13:06:30 ← be = ok
-13:06:42 ⏸  paused at validateUser auth.service.ts:147
-          locals: emailAddress="admin@test.com", isMatch=true
-13:06:53 → be eval "user.role.slug"
-13:06:53 ← be = "superadmin"
-13:06:56 → be continue
-13:06:56 ▶  resumed
+debugger_connect { port: 9229 }
+debugger_set_breakpoint { file: "auth.ts", line: 47 }
+debugger_state        → paused at line 47, locals: { user, token }
+debugger_eval { expr: "user.email" }
+debugger_continue
 ```
 
-Color-coded, timestamped, shows `fe`/`be` target. All events: paused, resumed, ops, results, traces.
+### Browser only
 
-For **remote** monitoring, `mypry watch` is still available:
+```
+debugger_connect { frontend: "http://localhost:3000" }
+debugger_snapshot     → ARIA tree
+debugger_browse { script: "fill \"textbox Email\" \"alice\"\nclick \"button Sign in\"" }
+debugger_eval { expr: "document.title", target: "browser" }
+```
+
+### Fullstack
+
+```
+debugger_connect { port: 9229, frontend: "http://localhost:3000" }
+debugger_set_breakpoint { file: "auth.ts", line: 47 }
+debugger_browse { script: "fill \"textbox Email\" \"alice\"\nclick \"button Sign in\"" }
+  → backend paused at auth.ts:47, locals: { email: "alice" }
+debugger_eval { expr: "req.body" }
+debugger_eval { expr: "document.cookie", target: "browser" }
+debugger_continue
+```
+
+---
+
+## Inject (no restart)
+
+Attach the debugger to a running Node.js process that wasn't started with `--inspect`.
+
+```
+debugger_inject { appPort: 3000 }
+```
+
+Finds the PID via `lsof`, activates the V8 inspector via `_debugProcess`, discovers the new inspector port, and connects — all in one call. Returns an actionable error if port 9229 is occupied.
+
+---
+
+## Next.js + Turbopack
+
+Next.js spawns multiple processes. Start with `NODE_OPTIONS` to enable the inspector on the child:
 
 ```bash
-mypry watch --host staging --port 3099     # remote daemon (via SSH tunnel or open port)
-mypry watch --token s3cr3t                 # with auth
+NODE_OPTIONS='--inspect=9555' npm run dev
+# Child (next-server) opens on port 9556
 ```
+
+```
+debugger_connect { port: 9556, frontend: "http://localhost:3000" }
+debugger_set_breakpoint { file: "route.ts", line: 7 }
+```
+
+Turbopack's consolidated chunk format, sectioned source maps, and hot-reload re-compilation are handled transparently. See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.
 
 ---
 
-## HTTP API (for non-MCP agents)
+## AgentScript
 
-The daemon is plain HTTP under the hood, so any agent or script can drive it directly. The MCP bridge is just a thin proxy over these endpoints.
+`debugger_browse` uses AgentScript — a built-in DSL that translates one-line commands into Playwright actions. **AgentScript is for driving the browser**, not for backend debugging.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | `{ ok, connected, status }` |
-| `GET` | `/state` · `/backtrace` · `/breakpoints` · `/workers` · `/traces` | Snapshots |
-| `GET` | `/events` | **SSE** stream of `paused` / `resumed` / `op` / `op-result` events |
-| `POST` | `/command` | One op: `{ op, ...params, target?, worker? }` |
-| `POST` | `/batch` | Many ops: `{ ops: [...] }` → `{ results: [...] }` |
+**Always call `debugger_snapshot` first** to see available selectors. Then use what the snapshot returns:
 
-```bash
-curl -X POST localhost:3098/command -d '{"op":"eval","expr":"users.length"}'
-# → {"ok":true,"type":"number","value":3}
+```
+fill "textbox Email" "alice@example.com"
+fill "textbox Password" "secret"
+click "button Sign in"
+waiturl "/dashboard"
 ```
 
-Add `--token <secret>` to require `Authorization: Bearer <secret>` on every request.
+| Category | Verbs |
+|----------|-------|
+| **Navigation** | `goto <url>`, `back`, `forward`, `reload`, `waiturl "<pattern>"` |
+| **Interaction** | `click`, `fill`, `clear`, `type`, `press`, `select`, `check`, `uncheck`, `hover`, `scroll`, `upload`, `ondialog` |
+| **Timing** | `wait <sel> visible`, `wait <sel> hidden`, `wait 500ms` |
+
+> For reading DOM values, use `debugger_eval { target: "browser" }` instead of DSL verbs. After navigation, snapshot again.
 
 ---
 
-## Programmatic API
+## Security
 
-mypry exports its internals so you can build your own UI, TUI, or integration:
+mypry gives an AI agent `eval` access to both your Node.js process and a browser page. This is powerful — and risky if misused.
+
+**What the agent can do:**
+- Execute arbitrary JavaScript in your Node.js process (read env vars, access the filesystem, call `process.exit()`)
+- Execute arbitrary JavaScript in the browser page (access cookies, localStorage, DOM)
+- Set breakpoints that pause your application
+
+**Recommendations:**
+- **Development only.** Do not run mypry on production systems.
+- **Localhost only.** The V8 inspector (`--inspect`) binds to `127.0.0.1` by default. Do not expose it to the network (`--inspect=0.0.0.0` is dangerous).
+- **Headless browser.** The default `headless: true` prevents UI interference. Use `headless: false` only for visual debugging.
+- **Review agent actions.** If your MCP runtime supports approval flows, enable them for `debugger_eval` and `debugger_inject`.
+
+---
+
+## Programmatic use
 
 ```ts
-import {
-  CDPClient,        // minimal CDP client over WebSocket, zero deps
-  DebuggerSession,  // pause / step / eval / breakpoints / trace
-  discoverTargets,  // find Node inspector + Chrome tabs
-  matchTarget,
-  snapshot,         // build a full state snapshot
-  executeOp,        // the shared op dispatch used by every transport
-} from 'mypry/core'
+import { DebuggerToolKit } from 'mypry/toolkit'
 
-const [target] = await discoverTargets('127.0.0.1', 9229)
-const cdp = new CDPClient(target.wsUrl)
-await cdp.connect()
-
-const session = new DebuggerSession(cdp)
-await session.init()
-
-await session.setBreakpoint('auth.service.ts', 151)
-await session.waitNextPause()
-const locals = await session.getLocals()   // { email, isMatch, ... }
-await session.resume()
-```
-
-`evalInFrame` auto-unwraps Vue/Pinia reactive objects and handles circular refs.
-
----
-
-## CLI reference
-
-| Command | Who it's for | What it does |
-|---------|:---:|-------------|
-| `mypry serve` | 🤖 Agents | HTTP daemon — exposes the API that agents connect to |
-| `mypry watch` | 👀 You | Read-only monitor — see what the agent is doing in realtime |
-| `mypry attach` | 🧑‍💻 You | Interactive REPL — type expressions, step manually (like `pry` in Ruby) |
-| `mypry open` | 🌐 Setup | Launch Chrome with `--remote-debugging-port` for frontend debugging |
-| `mypry inject` | 🔧 Setup | Send `SIGUSR1` to a running process to enable `--inspect` |
-
-```
-mypry — the interactive full-stack debugger for AI agents
-
-Commands:
-  mypry serve [options]   HTTP daemon for AI agents (recommended)
-  mypry attach [options]  Interactive REPL debugger
-  mypry watch [--port]    Monitor agent activity in realtime
-  mypry open [URL]        Launch Chrome with debugger port
-  mypry inject <PID>      Enable inspector on a running Node.js process
-
-Serve options (daemon mode):
-  --port PORT             HTTP API port (default: 3098)
-  --inspect PORT          Backend inspector port (default: 9229)
-  --frontend URL          Connect Chrome to URL for fullstack debugging
-  --token TOKEN           Bearer token for HTTP auth
-
-Attach options (interactive REPL):
-  --port PORT             V8 inspector port (default: 9229)
-  --host HOST             Inspector host (default: 127.0.0.1)
-  --url WS_URL            Direct WebSocket URL
-  --json                  ndjson stdio transport (for embedders)
-  --mcp                   Direct MCP on stdio (prefer the daemon + bridge instead)
-  --frontend URL          Also launch Chrome for frontend debugging
-
-Config file (.mypry.json in project root):
-  {"port": 3098, "frontend": "http://localhost:3001"}
-
-Examples:
-  mypry serve                                    # backend daemon on :3098
-  mypry serve --frontend http://localhost:3001    # fullstack daemon
-  mypry serve --port 3099 --inspect 9229         # custom ports
-  mypry watch                                    # monitor agent ops in realtime
-  mypry attach                                   # backend REPL
-  mypry attach --frontend http://localhost:3001   # REPL + frontend
-  mypry open http://localhost:5173                # launch Chrome for debugging
-  mypry inject 12345                              # enable inspector on PID
-```
-
----
-
-## Architecture
-
-```
-your app                          mypry daemon
-────────                          ────────────────────────────────
-debugger ─ V8 inspector :9229 ─▶  ┌──────────────────────────────┐
-debugger ─ Chrome CDP   :9222 ─▶  │  DebuggerSession             │
-pry()    ─ V8 inspector :9229 ─▶  │   ├─ pause / step / eval      │
-                                  │   ├─ trace mode (non-block)   │
-                                  │   ├─ conditional breakpoints  │
-                                  │   ├─ worker threads           │
-                                  │   ├─ source maps (.ts/.tsx/.vue)│
-                                  │   └─ auto-reconnect           │
-                                  │                              │
-                                  │  Transports: REPL · ndjson ·  │
-                                  │  HTTP+SSE · MCP bridge        │
-                                  └──────────────────────────────┘
-
-agent ── stdio ──▶ mcp-bridge ── HTTP :3098 ──▶ daemon ── CDP ──▶ app
+const kit = new DebuggerToolKit()
+await kit.call('debugger_connect', { port: 9229 })
+await kit.call('debugger_set_breakpoint', { file: 'auth.ts', line: 47 })
+const state = await kit.call('debugger_state')
+await kit.call('debugger_eval', { expr: 'user.role' })
+await kit.call('debugger_continue')
+await kit.call('debugger_disconnect')
 ```
 
 ---
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| **[Tutorial](TUTORIAL.md)** | Hands-on walkthrough of every feature |
-| **[AI Agent Skill](skills/SKILL.md)** | Drop-in skill for Antigravity, Claude Code, Cursor, Codex |
-| **[MCP Setup](docs/mcp-setup.md)** | Agent config for Claude, Cursor, Antigravity |
-| **[Remote Debugging](docs/remote-debugging.md)** | Staging, CI, Docker, SSH tunnels |
-| **[HTTP API](docs/http-api.md)** | All endpoints, auth, SSE, batch |
-| **[Programmatic API](docs/programmatic-api.md)** | CDPClient, DebuggerSession, executeOp |
-| **[Architecture](docs/architecture.md)** | Internals: transports, source maps, workers |
+| Document | Description |
+|----------|-------------|
+| [**Programmatic API**](docs/programmatic-api.md) | `DebuggerToolKit`, `CDPClient`, `DebuggerSession` — for custom integrations |
+| [**skills/SKILL.md**](skills/SKILL.md) | Drop-in AI agent skill |
 
 ---
 
 ## Requirements
 
 - **Node.js ≥ 22**
-- **Chrome / Chromium** (only for `--frontend` and `mypry open`)
+- **Playwright** — installed automatically with mypry
 
 ## License
 

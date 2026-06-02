@@ -129,7 +129,3 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     locals: await session.getLocals(),
   }
 }
-
-export function emit(obj: unknown): void {
-  process.stdout.write(JSON.stringify(obj) + '\n')
-}

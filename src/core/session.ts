@@ -199,11 +199,43 @@ export class DebuggerSession {
     // line is 1-based from user, CDP uses 0-based
     const lineNumber = line - 1
     const isTS = /\.tsx?$/.test(filePattern)
+    const basename = filePattern.replace(/^.*[/\\]/, '')
 
-    // For TypeScript files, we need to:
-    // 1. Find the compiled .js script whose source map points to our .ts file
-    // 2. Reverse-map the TS line → JS line using the source map
-    // 3. Set the breakpoint on the .js file at the mapped line
+    // ── Turbopack consolidated chunks (highest priority for .ts in Next.js) ──
+    // Must run BEFORE source map resolution because _resolveSourceMapBreakpoint
+    // can match wrong chunks (e.g. actions stubs instead of actual module code).
+    if (isTS) {
+      const found = await this._findTurbopackModule(basename)
+      if (found) {
+        let sourceFuncLine0 = 2 // default for typical route with 1 import
+        try {
+          const fs = await import('node:fs')
+          const sourceContent = fs.readFileSync(found.sourceFile, 'utf-8')
+          const sourceLines = sourceContent.split('\n')
+          for (let j = 0; j < sourceLines.length; j++) {
+            if (sourceLines[j].match(/^\s*(export\s+)?(async\s+)?function\s+\w/)) {
+              sourceFuncLine0 = j
+              break
+            }
+          }
+        } catch { /* use default */ }
+
+        const offset = found.compiledFuncLine - sourceFuncLine0
+        const targetLine = offset + lineNumber
+        const bpParams: Record<string, unknown> = {
+          location: { scriptId: found.scriptId, lineNumber: targetLine },
+        }
+        if (condition) bpParams.condition = condition
+        try {
+          const sr = await this.cdp.send('Debugger.setBreakpoint', bpParams) as any
+          const id = ++this._nextBpId
+          this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+          return id
+        } catch { /* fall through to source map */ }
+      }
+    }
+
+    // For TypeScript files, try source map resolution
     if (isTS) {
       const resolved = await this._resolveSourceMapBreakpoint(filePattern, lineNumber)
       if (resolved) {
@@ -221,42 +253,78 @@ export class DebuggerSession {
 
     // Fallback: try to match scripts by filename and resolve source maps
     const escaped = filePattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const basename = filePattern.replace(/^.*[/\\]/, '')
 
     // Search loaded scripts for a matching URL
     let matchedScriptId: string | null = null
     let matchedEntry: ScriptEntry | null = null
+    let turbopackMatch: { scriptId: string; entry: ScriptEntry } | null = null
+
     for (const [scriptId, entry] of this.scripts) {
       if (!entry.url) continue
       const urlPath = entry.url.replace(/\?.*$/, '') // strip query params (Vite ?t=xxx)
       const urlBasename = urlPath.replace(/^.*[/\\]/, '')
+
+      // Exact match (standard Node.js / Vite)
       if (urlBasename === basename || urlPath.endsWith('/' + filePattern)) {
         matchedScriptId = scriptId
         matchedEntry = entry
         break
       }
+
+      // Turbopack: the real compiled code lives in chunks with URL-encoded query params
+      // URL pattern: .next/.../chunks/[root-of-the-server]__HASH._.js?id=[project]/src/.../route.ts+...
+      // We decode the full URL and search for the original filename
+      try {
+        const decoded = decodeURIComponent(entry.url)
+        if (decoded.includes('/' + basename) && decoded.includes('[project]')) {
+          // Prefer scripts WITH source maps (they have the real compiled code)
+          if (!turbopackMatch || entry.sourceMapURL) {
+            turbopackMatch = { scriptId, entry }
+          }
+        }
+      } catch { /* bad URL encoding */ }
     }
 
-    // If we found a matching script with a source map, resolve the line number
-    if (matchedScriptId && matchedEntry?.sourceMapURL) {
-      let resolvedLine = lineNumber
-      try {
-        const mapped = await this._resolveInlineSourceMap(matchedEntry, filePattern, lineNumber)
-        if (mapped != null) resolvedLine = mapped.line
-      } catch { /* use original line */ }
+    // Use Turbopack match as fallback (old format: filename in URL)
+    if (!matchedScriptId && turbopackMatch) {
+      matchedScriptId = turbopackMatch.scriptId
+      matchedEntry = turbopackMatch.entry
+    }
 
-      // Use setBreakpointByUrl with the script's URL and resolved line
-      // setBreakpointByUrl is more forgiving than setBreakpoint — Chrome snaps to nearest valid location
-      const scriptUrl = matchedEntry.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // If we matched a script via URL, set breakpoint
+    if (matchedScriptId && matchedEntry) {
+      // If it has a source map, resolve the line number
+      if (matchedEntry.sourceMapURL) {
+        let resolvedLine = lineNumber
+        try {
+          const mapped = await this._resolveInlineSourceMap(matchedEntry, filePattern, lineNumber)
+          if (mapped != null) resolvedLine = mapped.line
+        } catch { /* use original line */ }
+
+        const baseUrl = matchedEntry.url.replace(/\?.*$/, '')
+        const scriptUrl = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '.*'
+        const bpParams: Record<string, unknown> = {
+          lineNumber: resolvedLine,
+          urlRegex: scriptUrl,
+        }
+        if (condition) bpParams.condition = condition
+        const sr = await this.cdp.send('Debugger.setBreakpointByUrl', bpParams) as any
+        const id = ++this._nextBpId
+        this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+        return id
+      }
+
+      // No source map — set breakpoint by scriptId directly
       const bpParams: Record<string, unknown> = {
-        lineNumber: resolvedLine,
-        urlRegex: scriptUrl,
+        location: { scriptId: matchedScriptId, lineNumber },
       }
       if (condition) bpParams.condition = condition
-      const sr = await this.cdp.send('Debugger.setBreakpointByUrl', bpParams) as any
-      const id = ++this._nextBpId
-      this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
-      return id
+      try {
+        const sr = await this.cdp.send('Debugger.setBreakpoint', bpParams) as any
+        const id = ++this._nextBpId
+        this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+        return id
+      } catch { /* fall through */ }
     }
 
     // No source map — use urlRegex directly (plain .js files)
@@ -304,20 +372,43 @@ export class DebuggerSession {
     if (!mapContent) return null
 
     const rawMap = JSON.parse(mapContent)
-    const sources: string[] = rawMap.sources || []
     const basename = filePattern.replace(/^.*[/\\]/, '')
 
-    const matchIdx = sources.findIndex((s: string) => {
+    // Find the source file name in the map (or in sections for indexed/sectioned maps)
+    let matchedSource: string | null = null
+
+    // Standard source maps: sources at root level
+    const rootSources: string[] = rawMap.sources || []
+    for (const s of rootSources) {
       const sBasename = s.replace(/^.*[/\\]/, '')
-      return sBasename === basename || s.endsWith(filePattern) || filePattern.endsWith(s)
-    })
-    if (matchIdx === -1) return null
+      if (sBasename === basename || s.endsWith(filePattern) || filePattern.endsWith(s)) {
+        matchedSource = s
+        break
+      }
+    }
+
+    // Sectioned/indexed source maps (Turbopack): sources are inside sections[*].map.sources
+    if (!matchedSource && rawMap.sections) {
+      for (const section of rawMap.sections) {
+        const sectionSources: string[] = section.map?.sources || []
+        for (const s of sectionSources) {
+          const sBasename = s.replace(/^.*[/\\]/, '')
+          if (sBasename === basename || s.endsWith(filePattern) || filePattern.endsWith(s)) {
+            matchedSource = s
+            break
+          }
+        }
+        if (matchedSource) break
+      }
+    }
+
+    if (!matchedSource) return null
 
     const { SourceMapConsumer } = await import('source-map')
     const consumer = await new SourceMapConsumer(rawMap)
     try {
       const gen = consumer.generatedPositionFor({
-        source: sources[matchIdx],
+        source: matchedSource,
         line: sourceLine0 + 1, // source-map lib uses 1-based
         column: 0,
       })
@@ -327,6 +418,101 @@ export class DebuggerSession {
     }
     return null
   }
+  /**
+   * Scan Turbopack consolidated chunks for a module matching `basename`.
+   * Returns the scriptId, compiled function line, and source file path.
+   */
+  private async _findTurbopackModule(basename: string): Promise<{
+    scriptId: string
+    compiledFuncLine: number
+    sourceFile: string
+  } | null> {
+    const basenameNoExt = basename.replace(/\.tsx?$/, '')
+    let best: { scriptId: string; compiledFuncLine: number; sourceFile: string } | null = null
+    let bestScriptIdNum = -1
+
+    for (const [scriptId, entry] of this.scripts) {
+      if (!entry.url) continue
+      // Only scan Turbopack dev chunks
+      if (!entry.url.includes('.next/dev/server/chunks/')) continue
+      if (entry.url.includes('node_modules')) continue
+      if (entry.url.includes('/ssr/')) continue
+
+      try {
+        // Check two patterns:
+        // 1. Initial: source contains "[project]/.../<basename>" module declaration
+        // 2. Hot-reload: URL query param contains the module path (URL-encoded)
+        const decodedUrl = decodeURIComponent(entry.url)
+        const isHotReloaded = decodedUrl.includes('?id=') && decodedUrl.includes(basename)
+
+        const source = await this.getSource(scriptId)
+        if (!source?.source) continue
+
+        let moduleStartLine = -1
+        const lines = source.source.split('\n')
+
+        if (!isHotReloaded) {
+          // Pattern 1: Full chunk with module declaration
+          if (!source.source.includes('[project]/')) continue
+          if (!source.source.includes('/' + basenameNoExt)) continue
+
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes(basename) && lines[i].includes('[project]')) {
+              moduleStartLine = i
+              break
+            }
+          }
+          if (moduleStartLine === -1) continue
+        }
+        // For hot-reloaded chunks, moduleStartLine stays -1 (no wrapper)
+
+        // Find the first function definition
+        const searchStart = moduleStartLine >= 0 ? moduleStartLine + 1 : 0
+        let compiledFuncLine = -1
+        for (let i = searchStart; i < Math.min(searchStart + 30, lines.length); i++) {
+          if (lines[i].match(/^\s*(async\s+)?function\s+\w/)) {
+            compiledFuncLine = i
+            break
+          }
+        }
+        if (compiledFuncLine === -1) continue
+
+        // Derive source file path
+        let sourceFile: string | null = null
+        const { join } = await import('node:path')
+
+        if (moduleStartLine >= 0) {
+          // Extract from module declaration: "[project]/src/.../route.ts ..."
+          const declLine = lines[moduleStartLine]
+          const pathMatch = declLine.match(/\[project\]\/([^\s"[\]]+)/)
+          if (!pathMatch) continue
+          const chunkPath = entry.url.replace(/^file:\/\//, '').replace(/\?.*$/, '')
+          const nextIdx = chunkPath.indexOf('.next/')
+          if (nextIdx === -1) continue
+          sourceFile = join(chunkPath.substring(0, nextIdx), pathMatch[1])
+        } else if (isHotReloaded) {
+          // Extract from URL query: ?id=[project]/src/.../route.ts+...
+          const idMatch = decodedUrl.match(/\[project\]\/([^\s+[\]]+)/)
+          if (!idMatch) continue
+          const chunkPath = entry.url.replace(/^file:\/\//, '').replace(/\?.*$/, '')
+          const nextIdx = chunkPath.indexOf('.next/')
+          if (nextIdx === -1) continue
+          sourceFile = join(chunkPath.substring(0, nextIdx), idMatch[1])
+        }
+        if (!sourceFile) continue
+
+        // Always prefer the highest scriptId (most recent after hot-reload)
+        const idNum = parseInt(scriptId, 10) || 0
+        if (idNum > bestScriptIdNum) {
+          bestScriptIdNum = idNum
+          best = { scriptId, compiledFuncLine, sourceFile }
+        }
+      } catch { /* skip */ }
+    }
+
+    return best
+  }
+
   /**
    * Resolve a TypeScript breakpoint to compiled JS coordinates.
    * Finds the .js script whose source map references our .ts file,
@@ -342,8 +528,9 @@ export class DebuggerSession {
     // Find a script whose source map references this .ts file
     for (const [scriptId, entry] of this.scripts) {
       if (!entry.sourceMapURL || !entry.url) continue
-      // Only check .js files
+      // Only check .js files, skip node_modules (framework internals match too broadly)
       if (!/\.js(\?.*)?$/.test(entry.url)) continue
+      if (entry.url.includes('node_modules')) continue
 
       try {
         // Resolve source map URL (can be relative to script URL or inline)

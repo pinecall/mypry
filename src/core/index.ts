@@ -1,12 +1,10 @@
 /**
  * Core re-exports for programmatic use:
- *   import { CDPClient, DebuggerSession, snapshot, discoverTargets, executeOp } from 'mypry/core'
+ *   import { CDPClient, DebuggerSession, snapshot, discoverTargets } from 'mypry/core'
  */
 
-export { CDPClient, WorkerCDPProxy, discoverWorkers } from './cdp-client.js'
-export type { WorkerInfo } from './cdp-client.js'
+export { CDPClient } from './cdp-client.js'
 export { DebuggerSession } from './session.js'
-export { snapshot, cleanUrl, formatValue, emit } from './snapshot.js'
+export { snapshot, cleanUrl, formatValue } from './snapshot.js'
 export type { Snapshot, PausedSnapshot, RunningSnapshot, SourceWindowLine } from './snapshot.js'
-export { discoverTargets, matchTarget } from './targets.js'
-export { executeOp } from './ops.js'
+export { discoverTargets } from './targets.js'

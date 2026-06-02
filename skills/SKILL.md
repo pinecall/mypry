@@ -1,197 +1,225 @@
-# Skill: mypry — Interactive Debugger for AI Agents
+# Skill: mypry — Fullstack Debugger for AI Agents
 
-> **When to read this:** Whenever you need to debug a running Node.js process, set breakpoints, inspect variables at runtime, step through code, trace execution, or debug frontend (Chrome CDP).
-
----
-
-## Setup
-
-### 1. Install
-
-```bash
-npm install -g mypry     # installs: mypry (CLI) + mypry-bridge (MCP)
-```
-
-### 2. Start your app with inspector
-
-```bash
-node --inspect server.js           # backend on :9229 (default)
-node --inspect=9230 server.js      # custom port
-```
-
-### 3. Start the daemon
-
-```bash
-mypry serve                        # connects to :9229, HTTP on :3098
-```
-
-> `mypry serve` also shows **live watch output** — you see every pause, eval, step, and continue in realtime. No separate `mypry watch` needed.
-
-### 4. Configure your AI agent
-
-Add to your MCP config:
-
-```json
-{
-  "mypry": {
-    "command": "mypry-bridge"
-  }
-}
-```
-
-That's it. Defaults to `http://127.0.0.1:3098`.
-
-**Config file locations by agent:**
-
-| Agent | Config file |
-|-------|-------------|
-| Antigravity (Gemini) | `~/.gemini/config/mcp_config.json` → `mcpServers` |
-| Claude Code | `~/.claude/settings.json` → `mcpServers` |
-| Cursor | `.cursor/mcp.json` → `mcpServers` |
-| Codex (OpenAI) | `codex.json` → `mcpServers` |
-
-If the daemon runs on a **non-default port** or behind a **TUI proxy**, set the URL:
-
-```json
-{
-  "mypry": {
-    "command": "mypry-bridge",
-    "env": { "MYPRY_URL": "http://127.0.0.1:3099" }
-  }
-}
-```
-
-> **TUI proxy users:** If your project uses a TUI that embeds mypry (e.g. a startup script that manages the CDP connection), you **must** set `MYPRY_URL` to the TUI's debugger endpoint. The default `:3098` won't reach it.
+> **When to read this:** Whenever you need to debug a running Node.js process, set breakpoints, inspect variables at runtime, step through code, or interact with the browser while debugging.
 
 ---
 
-## MCP Tools
+## Getting Connected
 
-### Inspection (safe, read-only)
+### Option A — Inject into a running process (RECOMMENDED)
+
+**No restart required.** Just tell mypry which port your app listens on:
+
+```
+→ debugger_inject { appPort: 3000 }
+← { backend: { connected: true }, injected: { pid: 12345, inspectorPort: 9229 } }
+```
+
+Add `frontend` for fullstack (backend + browser):
+
+```
+→ debugger_inject { appPort: 3000, frontend: "http://localhost:3000" }
+```
+
+Works with Express, Fastify, Vite, Hono — any Node.js app.
+
+> **Requires port 9229 to be free.** If another Node.js process already has an inspector on 9229, inject will fail with a clear error and instructions. In that case, use Option B.
+
+### Option B — Process already started with `--inspect`
+
+If the user started their app with the inspector flag:
+
+```bash
+node --inspect=9333 server.js
+```
+
+Connect directly to that port:
+
+```
+→ debugger_connect { port: 9333 }
+```
+
+Add `frontend` for fullstack:
+
+```
+→ debugger_connect { port: 9333, frontend: "http://localhost:3000" }
+```
+
+### Option C — Next.js (Turbopack)
+
+Next.js spawns a **child process** (`next-server`) that runs your code. The parent process gets the inspector, but your breakpoints need the child.
+
+**Tell the user to start with:**
+
+```bash
+NODE_OPTIONS='--inspect=9555' npm run dev
+```
+
+Then connect to **PORT+1** (the child process):
+
+```
+→ debugger_connect { port: 9556, frontend: "http://localhost:3000" }
+```
+
+> **Tip:** Check terminal output for `Debugger listening on ws://127.0.0.1:XXXX/...` to find the exact child port.
+
+Breakpoints work with Turbopack — mypry handles sectioned source maps and URL-encoded chunk paths automatically.
+
+### Option D — Browser only (no backend)
+
+```
+→ debugger_connect { frontend: "http://localhost:3000" }
+```
+
+### Decision Tree
+
+| User says... | Do this |
+|---|---|
+| "Debug my app on port 3000" | `debugger_inject { appPort: 3000 }` |
+| "I started with `--inspect`" | `debugger_connect { port: XXXX }` |
+| "Debug my Next.js app" | Tell user: `NODE_OPTIONS='--inspect=9555' npm run dev`, then `debugger_connect { port: 9556 }` |
+| "Test the UI" / "Check the page" | `debugger_connect { frontend: "http://..." }` |
+
+---
+
+## MCP Tools (11 tools)
+
+### Connection
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `debugger_state` | — | Current pause: file, line, function, locals, source window |
-| `debugger_eval` | `expr` | Evaluate JS — paused: frame scope; running: global scope |
-| `debugger_backtrace` | — | Call stack frames |
-| `debugger_source` | `file?` | Full source (source-mapped) |
-| `debugger_list_breakpoints` | — | All active breakpoints |
-| `debugger_trace_status` | — | Peek at trace buffer |
-| `debugger_workers` | — | List worker threads |
+| `debugger_connect` | `port?`, `host?`, `frontend?`, `headless?` | Connect to backend inspector + optionally launch browser |
+| `debugger_inject` | `appPort?`, `pid?`, `frontend?`, `headless?` | Activate inspector on a running process (no restart) |
+| `debugger_disconnect` | — | Close everything |
+
+### Inspection
+
+| Tool | Params | Description |
+|------|--------|-------------|
+| `debugger_state` | — | Unified state: backend (paused/running, file, line, locals) + browser (URL) |
+| `debugger_eval` | `expr`, `target?` | Evaluate JS — paused: frame scope; running: global scope. `target: "browser"` for frontend |
+| `debugger_snapshot` | `scope?` | Browser ARIA tree — read this before `debugger_browse` if you don't know the page |
+
+### Browser Interaction
+
+| Tool | Params | Description |
+|------|--------|-------------|
+| `debugger_browse` | `script`, `timeoutMs?` | Execute browser script. **Auto-detects backend pause** if a breakpoint fires |
 
 ### Execution Control
 
-| Tool | Params | Blocks? | Description |
-|------|--------|:------:|-------------|
-| `debugger_continue` | — | **yes** | Resume until next breakpoint (30s timeout) |
-| `debugger_step_over` | — | no | Next line |
-| `debugger_step_into` | — | no | Into function |
-| `debugger_step_out` | — | no | Out of function |
-| `debugger_pause` | — | no | Force-pause running process |
-| `debugger_set_breakpoint` | `file`, `line`, `condition?` | no | Set breakpoint (supports .ts via source maps) |
-| `debugger_remove_breakpoint` | `id` | no | Remove by ID |
-
-### Trace Mode (non-blocking)
-
 | Tool | Params | Description |
 |------|--------|-------------|
-| `debugger_trace_start` | `maxBuffer?` | Auto-resume + collect snapshots |
-| `debugger_trace_stop` | — | Stop, return all hits |
-| `debugger_trace_status` | — | Peek without stopping |
+| `debugger_continue` | — | Resume until next breakpoint (5s timeout) |
+| `debugger_step` | `mode` | `over`, `into`, or `out` — returns new state |
+| `debugger_set_breakpoint` | `file`, `line`, `condition?` | Set breakpoint (TypeScript + Turbopack via source maps) |
+| `debugger_breakpoints` | `remove?` | List all. If `remove` is set, removes that ID |
 
 ---
 
-## Debugging Workflows
+## Workflows
 
-### Best practice: dynamic breakpoints (no code changes)
-
-**Prefer `debugger_set_breakpoint` over `debugger;` statements.** This way you never modify source code to debug.
+### Backend debugging (no browser)
 
 ```
-→ debugger_set_breakpoint { file: "auth.service.ts", line: 147 }
+→ debugger_inject { appPort: 3000 }
+← { backend: { connected: true, target: "server.js" }, injected: { pid: 12345 } }
+
+→ debugger_set_breakpoint { file: "auth.service.ts", line: 47 }
 ← { ok: true, id: 1 }
 
 (trigger the code path — e.g. curl, browser click)
 
 → debugger_state
-← {
-    status: "paused",
-    file: "src/auth/auth.service.ts",
-    line: 147,
-    function: "validateUser",
-    locals: { emailAddress: "alice@test.com", isMatch: true }
-  }
+← { backend: { status: "paused", file: "auth.service.ts", line: 47,
+     function: "validateUser", locals: { email: "alice@test.com" } } }
 
-→ debugger_eval { expr: "user.role.slug" }
+→ debugger_eval { expr: "user.role" }
 ← { ok: true, value: "admin" }
 
 → debugger_continue
 ← { status: "running" }
 ```
 
-> **TypeScript supported:** `set_breakpoint("file.ts", line)` automatically resolves to the compiled `.js` via source maps. Works with `tsc`, NestJS, Vite, etc.
+> **TypeScript supported:** `set_breakpoint("file.ts", line)` automatically resolves via source maps.
 
 ### Conditional breakpoints
 
 ```
 → debugger_set_breakpoint {
-    file: "auth.service.ts",
-    line: 147,
-    condition: "emailAddress === \"admin@test.com\""
+    file: "auth.service.ts", line: 47,
+    condition: "email === \"admin@test.com\""
   }
 ```
 
-Only pauses when the condition is truthy. Other requests pass through.
+Only pauses when the condition is truthy.
 
-### Trace mode (observe without blocking)
+### Fullstack: debug backend + drive browser
 
-```
-→ debugger_set_breakpoint { file: "handler.ts", line: 42 }
-→ debugger_trace_start { maxBuffer: 50 }
-
-(app keeps running, breakpoints auto-resume and capture snapshots)
-
-→ debugger_trace_stop
-← { count: 12, hits: [...] }
-```
-
-### Frontend debugging
-
-Works with **any framework** — React, Vue, Angular, Svelte, plain JS. Anything running in Chrome.
+The most powerful workflow: set a breakpoint, trigger it from the browser, inspect the request.
 
 ```
-→ debugger_eval { target: "frontend", expr: "document.title" }
-→ debugger_eval { target: "frontend", expr: "document.querySelector('#app').textContent" }
-→ debugger_set_breakpoint { target: "frontend", file: "Login.tsx", line: 42 }
+# 1. Connect to everything
+→ debugger_inject { appPort: 3000, frontend: "http://localhost:3000" }
+← { backend: { connected: true }, browser: { connected: true }, injected: { pid: 12345 } }
+
+# 2. Set breakpoint on the login handler
+→ debugger_set_breakpoint { file: "auth.controller.ts", line: 47 }
+← { ok: true, id: 1 }
+
+# 3. Snapshot to see the page
+→ debugger_snapshot
+← textbox "Email", textbox "Password", button "Sign in" ...
+
+# 4. Fill form and submit — this triggers the breakpoint
+→ debugger_browse { script: "fill \"label:Email\" \"alice@test.com\"\nfill \"label:Password\" \"secret\"\nclick \"button Sign in\"" }
+← {
+    browser: { ok: true, stepsRun: 3 },
+    backend: { status: "paused", file: "auth.controller.ts", line: 47,
+               locals: { body: { email: "alice@test.com", password: "secret" } } }
+  }
+
+# 5. Inspect both sides simultaneously
+→ debugger_eval { expr: "body.email" }
+← { ok: true, value: "alice@test.com" }
+
+→ debugger_eval { expr: "document.title", target: "browser" }
+← { ok: true, value: "Login — My App" }
+
+→ debugger_continue
+← { status: "running" }
+
+# 6. Check browser landed on dashboard
+→ debugger_browse { script: "expect \"heading Welcome\" visible" }
+
+→ debugger_disconnect
 ```
 
-> Vue `ref()` and Pinia `$state` are auto-unwrapped. React/Angular/vanilla objects returned as-is.
+### Browser rules (CRITICAL)
 
-Requires Chrome with `--remote-debugging-port=9222`. Start with `mypry open <url>`.
+**NEVER invent or guess selectors.** Always call `debugger_snapshot` first, OR use known selectors from source code.
+
+| Snapshot shows | Write in script |
+|---|---|
+| `button "Sign In"` | `click "button Sign In"` |
+| `textbox "Email"` | `fill "textbox Email" "alice@test.com"` |
+| `link "Dashboard"` | `click "link Dashboard"` |
+| `heading "Welcome" [level=1]` | `expect "heading Welcome" visible` |
+
+If a selector is known from code, use it directly without snapshotting:
+`fill "#email" "alice"` or `fill "placeholder:Your name" "Alice"`.
 
 ---
 
 ## Important Behavior
 
-1. **`debugger_continue` BLOCKS** — waits up to 30s for next pause. Don't call unless you expect a breakpoint to fire.
-2. **Trace mode is non-blocking** — app runs normally, breakpoints auto-resume.
-3. **Source maps are automatic** — TypeScript paths shown in state, backtrace, source.
-4. **Global eval when not paused** — `debugger_eval` falls back to `Runtime.evaluate` (global scope).
-5. **Auto-reconnect** — survives process restarts (nodemon, NestJS `--watch`). Breakpoints are re-set.
-
----
-
-## CLI Quick Reference
-
-```bash
-mypry serve                                    # daemon on :3098 (+ live watch)
-mypry serve --frontend http://localhost:3001   # + Chrome CDP
-mypry serve --port 3099 --inspect 9230         # custom ports
-mypry watch                                    # remote monitor (SSE)
-mypry open http://localhost:3001               # launch debug Chrome
-mypry attach                                   # interactive REPL
-mypry inject <PID>                             # enable inspector on running PID
-```
+1. **`debugger_inject` is the easiest path** — no restart, no flags. Just the app port.
+2. **`debugger_browse` auto-detects pauses** — if a breakpoint fires during browser interaction, the response includes backend state.
+3. **`debugger_continue` waits 5s** — for next breakpoint. Returns `{status: "running"}` if nothing fires.
+4. **Source maps automatic** — TypeScript paths in state, breakpoints, eval. Works with Vite, Turbopack, tsc.
+5. **Auto-reconnect** — survives process restarts (nodemon, NestJS `--watch`).
+6. **Vue/Pinia unwrap** — `ref()` and `$state` auto-unwrapped in eval.
+7. **Cross-platform** — `inject` uses `process._debugProcess` (works on macOS, Linux, Windows).
 
 ---
 

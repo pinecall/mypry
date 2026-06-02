@@ -1,87 +1,119 @@
 # Programmatic API
 
-mypry exports its internals so you can build custom UIs, TUIs, integrations, or test harnesses. Everything the CLI and MCP bridge use is available as a TypeScript API.
+mypry exports its internals for building custom integrations, test harnesses, or TUIs.
+
+## DebuggerToolKit (recommended)
+
+The highest-level API. Wraps all 11 MCP tools in a single class.
 
 ```ts
-import {
-  CDPClient,
-  WorkerCDPProxy,
-  discoverWorkers,
-  DebuggerSession,
-  discoverTargets,
-  matchTarget,
-  snapshot,
-  executeOp,
-} from 'mypry/core'
+import { DebuggerToolKit } from 'mypry/toolkit'
+
+const kit = new DebuggerToolKit()
+
+// kit.tools          → MCP tool definitions (JSON Schema)
+// kit.call(name, args) → execute any tool
+// kit.dispose()      → cleanup
+
+await kit.call('debugger_connect', { port: 9229 })
+await kit.call('debugger_set_breakpoint', { file: 'auth.ts', line: 47 })
+
+// ... trigger the endpoint ...
+
+const state = await kit.call('debugger_state')
+// { backend: { status: 'paused', file: '...', line: 47, locals: {...} } }
+
+await kit.call('debugger_eval', { expr: 'user.role' })
+// { ok: true, type: 'string', value: 'admin' }
+
+await kit.call('debugger_continue')
+await kit.call('debugger_disconnect')
+```
+
+### With browser (fullstack)
+
+```ts
+const kit = new DebuggerToolKit()
+
+await kit.call('debugger_connect', {
+  port: 9229,
+  frontend: 'http://localhost:3000'
+})
+
+// Snapshot the page
+const snap = await kit.call('debugger_snapshot')
+
+// Drive the browser
+await kit.call('debugger_browse', {
+  script: 'fill "textbox Email" "alice"\nclick "button Sign in"'
+})
+
+// Eval in both contexts
+await kit.call('debugger_eval', { expr: 'req.body' })          // backend
+await kit.call('debugger_eval', { expr: 'document.title', target: 'browser' })
+
+await kit.call('debugger_disconnect')
 ```
 
 ---
 
-## CDPClient
+## Core API (lower level)
+
+For building custom debugger UIs or direct CDP control.
+
+```ts
+import { CDPClient, DebuggerSession, snapshot, discoverTargets } from 'mypry/core'
+```
+
+### discoverTargets
+
+Find Node.js inspector targets on a host:port.
+
+```ts
+const targets = await discoverTargets('127.0.0.1', 9229)
+// [{ kind: 'node', wsUrl: 'ws://...', title: 'server.js' }]
+```
+
+### CDPClient
 
 Minimal Chrome DevTools Protocol client over WebSocket. Zero dependencies.
 
 ```ts
-import { CDPClient } from 'mypry/core'
-
-const cdp = new CDPClient('ws://127.0.0.1:9229/...')
+const cdp = new CDPClient(targets[0].wsUrl)
 await cdp.connect()
 
-// Send a CDP command
+// Send CDP commands directly
 const result = await cdp.send('Runtime.evaluate', {
   expression: '1 + 1',
   returnByValue: true,
 })
 console.log(result.result.value) // 2
 
-// Listen for events
+// Listen for CDP events
 cdp.on('Debugger.paused', (params) => {
   console.log('Paused at', params.callFrames[0].location)
 })
-
-// Disconnect
-cdp.ws.close()
 ```
 
-### Methods
+### DebuggerSession
 
-| Method | Description |
-|--------|-------------|
-| `connect()` | Open WebSocket, enable `Debugger` and `Runtime` domains |
-| `send(method, params?)` | Send a CDP command, returns a Promise |
-| `on(event, handler)` | Subscribe to CDP events |
-| `off(event, handler)` | Unsubscribe |
-
----
-
-## DebuggerSession
-
-High-level debugger abstraction over CDPClient. Handles pause state, breakpoints, stepping, evaluation, source maps, trace mode, and locals extraction.
+High-level debugger abstraction over CDPClient. Handles breakpoints, stepping, evaluation, source maps, and Turbopack chunk resolution.
 
 ```ts
-import { CDPClient, DebuggerSession, discoverTargets } from 'mypry/core'
-
-const [target] = await discoverTargets('127.0.0.1', 9229)
-const cdp = new CDPClient(target.wsUrl)
-await cdp.connect()
-
 const session = new DebuggerSession(cdp)
 await session.init()
 
-// Set a breakpoint
-const bp = await session.setBreakpoint('auth.service.ts', 151)
-
-// Wait for pause
+// Breakpoints
+const bp = await session.setBreakpoint('auth.ts', 47, 'email === "admin"')
 await session.waitNextPause()
 
 // Inspect
 const locals = await session.getLocals()     // { email, isMatch, ... }
 const frames = await session.getBacktrace()  // [{ function, file, line }, ...]
-const src = await session.getSource()        // { file, source, current_line }
 
 // Evaluate in the paused frame
 const result = await session.evalInFrame('user.role')
-// { ok: true, type: 'string', value: 'admin', description: 'admin' }
+// { ok: true, type: 'string', value: 'admin' }
 
 // Step
 await session.stepOver()
@@ -91,106 +123,26 @@ await session.stepOut()
 // Resume
 await session.resume()
 
-// Remove breakpoint
+// Cleanup
 await session.removeBreakpoint(bp.id)
 ```
 
-### Key methods
+### snapshot
 
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `init()` | void | Enable debugger, set up event listeners |
-| `setBreakpoint(file, line, condition?)` | `{ id }` | Set a breakpoint |
-| `removeBreakpoint(id)` | void | Remove a breakpoint |
-| `getBreakpoints()` | `Breakpoint[]` | List active breakpoints |
-| `resume()` | void | Continue execution |
-| `stepOver()` | void | Step over |
-| `stepInto()` | void | Step into |
-| `stepOut()` | void | Step out |
-| `pause()` | void | Force-pause |
-| `waitNextPause(timeout?)` | void | Wait for the next pause (default 30s) |
-| `getLocals()` | `Record<string, any>` | Frame-local variables |
-| `getBacktrace()` | `Frame[]` | Call stack (source-mapped) |
-| `getSource(file?)` | `{ file, source, current_line }` | Source code |
-| `evalInFrame(expr)` | `EvalResult` | Evaluate JS in the paused frame |
-| `startTrace(maxBuffer?)` | void | Begin non-blocking trace |
-| `stopTrace()` | `{ count, hits }` | Stop trace, return hits |
-| `getTraceStatus()` | `{ tracing, count, hits }` | Peek at trace buffer |
-
-### evalInFrame
-
-`evalInFrame` auto-unwraps:
-- **Vue `ref()`** → returns `.value`
-- **Pinia store** → returns `.$state`
-- **`reactive()` proxy** → unwraps via `__v_raw`
-- **Circular references** → replaced with `[Circular]`
-
-These checks are harmless no-ops for non-Vue code.
-
----
-
-## discoverTargets
-
-Find Node.js and Chrome inspector targets on a host:port.
+Build a full state snapshot (same format as `debugger_state`):
 
 ```ts
-import { discoverTargets } from 'mypry/core'
-
-const targets = await discoverTargets('127.0.0.1', 9229)
-// [{ kind: 'node', wsUrl: 'ws://...', title: 'server.js' }]
-
-const chromeTargets = await discoverTargets('127.0.0.1', 9222)
-// [{ kind: 'chrome', wsUrl: 'ws://...', title: 'Login', url: 'http://localhost:3001/login' }]
-```
-
-## matchTarget
-
-Find a specific Chrome tab by title or URL:
-
-```ts
-import { matchTarget } from 'mypry/core'
-
-const tab = matchTarget(chromeTargets, { tabUrl: 'localhost:3001' })
-const cdp = new CDPClient(tab!.wsUrl)
-```
-
----
-
-## snapshot
-
-Build a full state snapshot (what `debugger_state` returns):
-
-```ts
-import { snapshot } from 'mypry/core'
-
 const state = await snapshot(session)
-// { status, file, line, function, source_window, locals }
+// { status: 'paused', file: '...', line: 47, function: 'validateUser',
+//   source_window: [...], locals: { email, isMatch } }
 ```
 
 ---
 
-## executeOp
-
-The shared operation dispatch used by every transport (HTTP, ndjson, MCP). Execute any op programmatically:
+## Example: custom watcher
 
 ```ts
-import { executeOp } from 'mypry/core'
-
-const result = await executeOp(session, 'eval', { expr: 'users.length' })
-// { ok: true, type: 'number', value: 3, description: '3' }
-
-const state = await executeOp(session, 'state')
-// { status: 'paused', file: '...', line: 151, ... }
-```
-
-> **Note:** The signature is `executeOp(session, op, params)` — NOT `executeOp(session, { op, ...params })`. The `op` string and `params` object are separate arguments.
-
----
-
-## Example: custom TUI
-
-```ts
-import { CDPClient, DebuggerSession, discoverTargets, snapshot } from 'mypry/core'
+import { CDPClient, DebuggerSession, snapshot, discoverTargets } from 'mypry/core'
 
 async function main() {
   const [target] = await discoverTargets('127.0.0.1', 9229)
@@ -201,57 +153,19 @@ async function main() {
   await session.init()
 
   // React to pauses
-  session.on('paused', async () => {
+  cdp.on('Debugger.paused', async () => {
     const state = await snapshot(session)
     console.log(`⏸  Paused at ${state.function} ${state.file}:${state.line}`)
     console.log('   Locals:', JSON.stringify(state.locals, null, 2))
   })
 
-  session.on('resumed', () => {
+  cdp.on('Debugger.resumed', () => {
     console.log('▶  Resumed')
   })
 
   console.log('Watching... (Ctrl+C to exit)')
-  await new Promise(() => {}) // block forever
+  await new Promise(() => {})
 }
 
 main()
 ```
-
----
-
-## Browser pry()
-
-Drop a trigger in browser-side code (React, Vue, Svelte, etc.). When Chrome is launched with `--remote-debugging-port`, mypry attaches via CDP.
-
-```ts
-import { pry } from 'mypry/browser'
-
-// In a React component:
-useEffect(() => {
-  fetchData().then(data => {
-    pry({ message: 'after fetch' })  // pauses here in Chrome DevTools
-    setItems(data)
-  })
-}, [])
-```
-
-The `pry()` call emits a `debugger` statement. When mypry's frontend session is attached (via `--frontend` or `mypry open`), it pauses and gives you full eval/step/locals.
-
----
-
-## Node.js pry()
-
-Inline trigger for Node.js scripts that don't start with `--inspect`:
-
-```ts
-// CJS
-const pry = require('mypry')
-pry()   // opens inspector with wait=true, blocks until mypry connects
-
-// ESM
-import { pry } from 'mypry'
-pry({ port: 9230, message: 'after DB query' })
-```
-
-Each `pry()` call re-opens the inspector, ensuring it always blocks — even on subsequent calls.
