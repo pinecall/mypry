@@ -14,12 +14,17 @@ npm run build        # tsc → dist/
 npm run watch        # tsc --watch
 ```
 
-No test suite yet. Verify manually with the example server:
+Integration tests run against a real Next.js dev server (no mocks):
 
 ```bash
-node --inspect=9333 examples/server.cjs
-# Then use debugger_connect { port: 9333 } via MCP
+npm test                          # build + run integration tests
+npm run test:integration          # same
+node --test tests/integration/webpack-breakpoints.test.mjs  # direct
 ```
+
+The test fixture lives in `tests/fixtures/cart-bug/` — a Next.js 14 app with
+a planted state-management bug used to verify breakpoint resolution, HMR
+survival, conditional breakpoints, eval, step-over, and reconnection.
 
 ## Source layout
 
@@ -56,6 +61,7 @@ This is the most complex part. When `set_breakpoint({ file: "route.ts", line: 9 
 1. **Plain JS** — direct URL match, set at exact line
 2. **TypeScript** — find compiled .js with source map referencing the .ts file, reverse-map the line
 3. **Turbopack (Next.js)** — scan consolidated chunks for module declaration, compute offset between compiled and source function positions
+4. **Webpack-internal (Next.js 14)** — match `webpack-internal://` scripts by file path, resolve line via inline source map, use `setBreakpointByUrl` for HMR resilience
 
 See [docs/architecture.md](docs/architecture.md) for the full resolution chains.
 
@@ -81,12 +87,4 @@ See [docs/architecture.md](docs/architecture.md) for the full resolution chains.
 npm version <patch|minor|prerelease>
 npm run build
 npm publish --tag beta
-```
-
-Push to GitHub requires the `pinecall` gh profile:
-
-```bash
-gh auth switch --user pinecall
-git push origin master
-gh auth switch --user bernatch22
 ```

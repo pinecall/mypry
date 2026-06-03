@@ -259,16 +259,49 @@ export class DebuggerSession {
     let matchedEntry: ScriptEntry | null = null
     let turbopackMatch: { scriptId: string; entry: ScriptEntry } | null = null
 
+    let basenameMatch: { scriptId: string; entry: ScriptEntry } | null = null
+
     for (const [scriptId, entry] of this.scripts) {
       if (!entry.url) continue
       const urlPath = entry.url.replace(/\?.*$/, '') // strip query params (Vite ?t=xxx)
       const urlBasename = urlPath.replace(/^.*[/\\]/, '')
 
-      // Exact match (standard Node.js / Vite)
-      if (urlBasename === basename || urlPath.endsWith('/' + filePattern)) {
-        matchedScriptId = scriptId
-        matchedEntry = entry
-        break
+      // Full path match — prefer highest scriptId (most recent after HMR)
+      if (urlPath.endsWith('/' + filePattern)) {
+        const idNum = parseInt(scriptId, 10) || 0
+        const prevId = matchedScriptId ? (parseInt(matchedScriptId, 10) || 0) : -1
+        if (idNum > prevId) {
+          matchedScriptId = scriptId
+          matchedEntry = entry
+        }
+      }
+
+      // Basename-only match (lower priority — keep scanning for full path)
+      if (urlBasename === basename && !basenameMatch) {
+        basenameMatch = { scriptId, entry }
+      }
+
+      // webpack-internal: Next.js compiles routes into scripts whose URL contains
+      // the original file path after "webpack:/" or directly as the module path.
+      // Example: webpack-internal:///(rsc)/./app/api/cart/total/route.ts
+      if (entry.url.includes('webpack-internal://')) {
+        try {
+          const decoded = decodeURIComponent(entry.url)
+          // Full filePattern match is highest priority
+          if (decoded.includes('/' + filePattern)) {
+            const idNum = parseInt(scriptId, 10) || 0
+            const prevId = matchedScriptId ? (parseInt(matchedScriptId, 10) || 0) : -1
+            if (idNum > prevId) {
+              matchedScriptId = scriptId
+              matchedEntry = entry
+            }
+          } else if (decoded.includes('/' + basename)) {
+            // Basename-only webpack match — only use if no full match found
+            if (!basenameMatch) {
+              basenameMatch = { scriptId, entry }
+            }
+          }
+        } catch { /* bad URL encoding */ }
       }
 
       // Turbopack: the real compiled code lives in chunks with URL-encoded query params
@@ -285,6 +318,11 @@ export class DebuggerSession {
       } catch { /* bad URL encoding */ }
     }
 
+    // Use basename match as fallback if no full-path match found
+    if (!matchedScriptId && basenameMatch) {
+      matchedScriptId = basenameMatch.scriptId
+      matchedEntry = basenameMatch.entry
+    }
     // Use Turbopack match as fallback (old format: filename in URL)
     if (!matchedScriptId && turbopackMatch) {
       matchedScriptId = turbopackMatch.scriptId
@@ -300,6 +338,43 @@ export class DebuggerSession {
           const mapped = await this._resolveInlineSourceMap(matchedEntry, filePattern, lineNumber)
           if (mapped != null) resolvedLine = mapped.line
         } catch { /* use original line */ }
+
+        // For webpack-internal scripts, use setBreakpointByUrl with the full URL
+        // as regex. This is MORE resilient to HMR than setBreakpoint-by-scriptId,
+        // because CDP auto-resolves the regex when new scripts appear after hot reload.
+        // Fall back to scriptId only if urlRegex silently fails to bind.
+        if (matchedEntry.url.includes('webpack-internal://')) {
+          const baseUrl = matchedEntry.url.replace(/\?.*$/, '')
+          const urlRegex = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const byUrlParams: Record<string, unknown> = {
+            lineNumber: resolvedLine,
+            urlRegex,
+          }
+          if (condition) byUrlParams.condition = condition
+          try {
+            const sr = await this.cdp.send('Debugger.setBreakpointByUrl', byUrlParams) as any
+            // Check if it actually bound to a location (locations array non-empty)
+            if (sr.locations && sr.locations.length > 0) {
+              const id = ++this._nextBpId
+              this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+              return id
+            }
+            // urlRegex registered but didn't bind — remove and try scriptId
+            await this.cdp.send('Debugger.removeBreakpoint', { breakpointId: sr.breakpointId }).catch(() => {})
+          } catch { /* fall through */ }
+
+          // Fallback: setBreakpoint by scriptId (won't survive HMR but works now)
+          const bpParams: Record<string, unknown> = {
+            location: { scriptId: matchedScriptId, lineNumber: resolvedLine },
+          }
+          if (condition) bpParams.condition = condition
+          try {
+            const sr = await this.cdp.send('Debugger.setBreakpoint', bpParams) as any
+            const id = ++this._nextBpId
+            this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
+            return id
+          } catch { /* fall through to generic urlRegex */ }
+        }
 
         const baseUrl = matchedEntry.url.replace(/\?.*$/, '')
         const scriptUrl = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '.*'
@@ -380,9 +455,11 @@ export class DebuggerSession {
     // Standard source maps: sources at root level
     const rootSources: string[] = rawMap.sources || []
     for (const s of rootSources) {
-      const sBasename = s.replace(/^.*[/\\]/, '')
-      if (sBasename === basename || s.endsWith(filePattern) || filePattern.endsWith(s)) {
-        matchedSource = s
+      // Strip query params (webpack adds cache busters like ?47a1 to source names)
+      const sClean = s.replace(/\?.*$/, '')
+      const sBasename = sClean.replace(/^.*[/\\]/, '')
+      if (sBasename === basename || sClean.endsWith(filePattern) || filePattern.endsWith(sClean)) {
+        matchedSource = s  // use original name for source map lookup
         break
       }
     }

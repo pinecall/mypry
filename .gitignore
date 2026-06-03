@@ -1,5 +1,7 @@
 node_modules/
 dist/
 dist-test/
+.next/
+*.tsbuildinfo
 *.tar.gz
 *.legacy.js
