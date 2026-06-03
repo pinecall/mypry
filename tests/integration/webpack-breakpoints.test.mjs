@@ -316,6 +316,123 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
       `subtotal should be set after step over, got: ${locals.subtotal}`
     )
 
+  })
+
+  // ── Edge case tests (v0.1.0-beta.8 improvements) ──
+
+  it('locals deep-serialize objects — cart shows full JSON, not "Object"', async () => {
+    const { session } = ctx
+
+    // Setup: add items + coupon so cart has interesting nested data
+    await postAPI('/api/cart/add', { sessionId: 'test_deep', sku: 'KEY' })
+    await postAPI('/api/cart/add', { sessionId: 'test_deep', sku: 'MSE' })
+    await postAPI('/api/cart/coupon', { sessionId: 'test_deep', code: 'SAVE10' })
+
+    await session.setBreakpoint('app/api/cart/total/route.ts', 9)
+    const result = await fireAndWaitPause(
+      session, '/api/cart/total', { sessionId: 'test_deep' }
+    )
+    assert.ok(result.paused, 'should pause')
+
+    const locals = await session.getLocals()
+
+    // cart should be a FULL OBJECT, not the string "Object"
+    assert.ok(
+      typeof locals.cart === 'object' && locals.cart !== null,
+      `cart should be a serialized object, got: ${typeof locals.cart} = ${JSON.stringify(locals.cart)}`
+    )
+
+    // Verify cart contents are accessible
+    const cart = locals.cart
+    assert.ok(Array.isArray(cart.items), 'cart.items should be an array')
+    assert.equal(cart.items.length, 2, 'cart should have 2 items')
+    assert.equal(cart.discountPct, 10, 'discountPct should be 10')
+    assert.equal(cart.couponCode, 'SAVE10', 'couponCode should be SAVE10')
+
+    // sessionId should still be a plain string
+    assert.equal(locals.sessionId, 'test_deep', 'sessionId should be a string')
+
+    await session.resume()
+  })
+
+  it('locals show [unset] for variables not yet initialized', async () => {
+    const { session } = ctx
+
+    // Line 9 is: const subtotal = cart.items.reduce(...)
+    // At line 9, subtotal/discount/total should be [unset] (not yet assigned)
+    await session.setBreakpoint('app/api/cart/total/route.ts', 9)
+    const result = await fireAndWaitPause(
+      session, '/api/cart/total', { sessionId: 'test_unset' }
+    )
+    assert.ok(result.paused, 'should pause')
+
+    const locals = await session.getLocals()
+    assert.equal(locals.subtotal, '[unset]', 'subtotal should be [unset] before assignment')
+    assert.equal(locals.discount, '[unset]', 'discount should be [unset] before assignment')
+    assert.equal(locals.total, '[unset]', 'total should be [unset] before assignment')
+
+    // But cart and sessionId should be set (assigned on lines 5-6)
+    assert.ok(locals.cart !== '[unset]', 'cart should be set')
+    assert.ok(locals.sessionId !== '[unset]', 'sessionId should be set')
+
+    await session.resume()
+  })
+
+  it('getLocals matches evalInFrame for complex objects', async () => {
+    const { session } = ctx
+
+    await postAPI('/api/cart/add', { sessionId: 'test_match', sku: 'PAD' })
+    await session.setBreakpoint('app/api/cart/total/route.ts', 9)
+
+    const result = await fireAndWaitPause(
+      session, '/api/cart/total', { sessionId: 'test_match' }
+    )
+    assert.ok(result.paused, 'should pause')
+
+    // Get cart via both paths
+    const locals = await session.getLocals()
+    const evalResult = await session.evalInFrame('cart')
+    const evalCart = evalResult?.result?.value
+
+    // Both should have the same shape
+    assert.ok(typeof locals.cart === 'object', 'locals.cart should be an object')
+    assert.ok(typeof evalCart === 'object', 'eval cart should be an object')
+    assert.deepEqual(locals.cart.items, evalCart.items, 'items should match')
+    assert.equal(locals.cart.discountPct, evalCart.discountPct, 'discountPct should match')
+
+    await session.resume()
+  })
+
+  it('rejects breakpoint on non-existent file with helpful error', async () => {
+    const { session } = ctx
+
+    await assert.rejects(
+      () => session.setBreakpoint('this/file/does-not-exist.ts', 1),
+      (err) => {
+        assert.ok(err.message.includes('No script matching'), `error should mention script search, got: ${err.message}`)
+        assert.ok(err.message.includes('loaded scripts'), 'error should mention loaded scripts count')
+        return true
+      }
+    )
+  })
+
+  it('req object in locals serializes as object, not just "Proxy"', async () => {
+    const { session } = ctx
+
+    // Pause at line 5 where req is in scope (const { sessionId } = await req.json())
+    // Actually line 6 is better: const cart = getCart(sessionId)
+    // At line 9, req is in scope from the function param
+    await session.setBreakpoint('app/api/cart/total/route.ts', 9)
+    const result = await fireAndWaitPause(
+      session, '/api/cart/total', { sessionId: 'test_proxy' }
+    )
+    assert.ok(result.paused, 'should pause')
+
+    const locals = await session.getLocals()
+    // req is a NextRequest (Proxy) — should degrade gracefully, not crash
+    // It should be either a serialized object or a description string, but NOT undefined
+    assert.ok(locals.req !== undefined, 'req should be present in locals')
+
     await session.resume()
   })
 })

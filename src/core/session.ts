@@ -151,11 +151,37 @@ export class DebuggerSession {
       ownProperties: true,
     }) as any
     const out: Record<string, unknown> = {}
+    const deepResolves: Promise<void>[] = []
+
     for (const p of r.result || []) {
       if (!p.value) { out[p.name] = '[unset]'; continue }
-      if (p.value.value !== undefined) out[p.name] = p.value.value
-      else out[p.name] = p.value.description || `[${p.value.type}]`
+      const v = p.value
+      // Primitives — use directly
+      if (v.value !== undefined) {
+        out[p.name] = v.value
+      } else if (v.type === 'function') {
+        out[p.name] = `[Function: ${v.description?.split('(')[0]?.trim() || 'anon'}]`
+      } else if (v.type === 'object' && v.objectId) {
+        // Deep-serialize objects via eval (handles Proxy, circular refs, Vue refs)
+        const name = p.name
+        deepResolves.push(
+          this.evalInFrame(name).then((er: any) => {
+            if (er?.result?.value !== undefined) {
+              out[name] = er.result.value
+            } else {
+              out[name] = v.description || `[${v.subtype || v.type}]`
+            }
+          }).catch(() => {
+            out[name] = v.description || `[${v.subtype || v.type}]`
+          })
+        )
+      } else {
+        out[p.name] = v.description || `[${v.type}]`
+      }
     }
+
+    // Resolve all deep serializations in parallel
+    if (deepResolves.length) await Promise.all(deepResolves)
     return out
   }
 
@@ -384,6 +410,13 @@ export class DebuggerSession {
         }
         if (condition) bpParams.condition = condition
         const sr = await this.cdp.send('Debugger.setBreakpointByUrl', bpParams) as any
+        if (!sr.locations?.length) {
+          throw new Error(
+            `Breakpoint registered but did not bind to any location. ` +
+            `File "${filePattern}" line ${line} may not contain executable code at that line. ` +
+            `Try a nearby line with actual code (not a comment or blank line).`
+          )
+        }
         const id = ++this._nextBpId
         this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
         return id
@@ -402,13 +435,24 @@ export class DebuggerSession {
       } catch { /* fall through */ }
     }
 
-    // No source map — use urlRegex directly (plain .js files)
+    // No matching script found in session — try urlRegex as last resort.
+    // This can still work: CDP will bind the BP if a matching script loads later.
     const params: Record<string, unknown> = {
       lineNumber,
       urlRegex: escaped,
     }
     if (condition) params.condition = condition
     const r = await this.cdp.send('Debugger.setBreakpointByUrl', params) as any
+    if (!r.locations?.length) {
+      // BP registered but not bound — likely the script hasn't been loaded yet
+      const scriptCount = this.scripts.size
+      throw new Error(
+        `No script matching "${filePattern}" found (searched ${scriptCount} loaded scripts). ` +
+        `The file may not have been loaded yet — trigger a request to the route/endpoint first, ` +
+        `then retry set_breakpoint. If using Next.js, make sure to connect to the router ` +
+        `server port (usually inspector port + 1).`
+      )
+    }
     const id = ++this._nextBpId
     this.breakpoints.set(id, { file: filePattern, line, cdpId: r.breakpointId, condition })
     return id
