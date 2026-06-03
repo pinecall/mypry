@@ -110,7 +110,9 @@ export const TOOLS = [
       'For line breakpoints: pass file + line (supports TypeScript via source maps). ' +
       'For exception breakpoints: pass exception="all" (pause on every throw), ' +
       '"uncaught" (only unhandled), or "none" (disable). ' +
-      'Exception breakpoints are the best way to find the source of an error when you don\'t know where it is.',
+      'Exception breakpoints use justMyCode — only pauses on YOUR code, not framework internals. ' +
+      'Logpoints: pass logMessage to log without pausing (use {expr} for interpolation). ' +
+      'Hit count: pass hitCount to only pause on the Nth execution.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -118,6 +120,8 @@ export const TOOLS = [
         line: { type: 'number', description: 'Line number (1-based)' },
         condition: { type: 'string', description: 'JS condition — only pause when truthy' },
         exception: { type: 'string', enum: ['all', 'uncaught', 'none'], description: 'Pause on exceptions: "all", "uncaught", or "none" to disable' },
+        logMessage: { type: 'string', description: 'Log message instead of pausing (logpoint). Use {expr} for interpolation, e.g. "user={user.email} role={user.role}"' },
+        hitCount: { type: 'number', description: 'Only pause on the Nth execution of this line. Useful for loops.' },
       },
     },
   },
@@ -200,6 +204,10 @@ export const DEBUGGER_INSTRUCTIONS = [
   '   Exception: debugger_set_breakpoint { exception: "all" }  ← BEST when you don\'t know WHERE the error is',
   '   Uncaught:  debugger_set_breakpoint { exception: "uncaught" }  ← only unhandled errors',
   '   Disable:   debugger_set_breakpoint { exception: "none" }',
+  '   Logpoint:  debugger_set_breakpoint { file: "auth.ts", line: 47, logMessage: "user={user.email} role={user.role}" }',
+  '             → logs without pausing. Use {expr} for interpolation.',
+  '   Hit count: debugger_set_breakpoint { file: "loop.ts", line: 12, hitCount: 5 }',
+  '             → only pauses on the 5th execution.',
   '3. Trigger the breakpoint:',
   '   — debugger_browse to interact with the UI (click Submit → backend BP fires)',
   '   — or run `curl ... &` in the terminal',
@@ -209,9 +217,11 @@ export const DEBUGGER_INSTRUCTIONS = [
   '   • __closure__: variables from parent scopes (module imports, singletons)',
   '   • call_stack: full call chain (who called this function)',
   '   • source_window: ±4 lines of ORIGINAL TypeScript (not compiled JS)',
+  '   • return_value: value returned by the last function call (after step-over)',
   '5. debugger_eval { expr: "request.body" } — backend variables',
   '   debugger_eval { expr: "document.title", target: "browser" } — frontend DOM/state',
   '6. debugger_step { mode: "over" } — step through code',
+  '   debugger_step { mode: "into" } — smart: auto-skips framework code (node_modules)',
   '7. debugger_continue — resume execution',
   '   debugger_continue { timeoutMs: 15000 } — wait longer for slow operations',
   '',
@@ -311,7 +321,7 @@ export class DebuggerToolKit {
   private browserKit: BrowserToolKit | null = null
   private _reconnecting = false
   private _disposed = false
-  private _exceptionState: 'none' | 'uncaught' | 'all' = 'none'
+  // Exception state is managed by session.exceptions (ExceptionPauseService)
 
   /** Tool definitions — register in your MCP server. */
   get tools() { return TOOLS }
@@ -673,8 +683,7 @@ export class DebuggerToolKit {
       if (!['all', 'uncaught', 'none'].includes(state)) {
         throw new Error('exception must be "all", "uncaught", or "none"')
       }
-      await session.cdp.send('Debugger.setPauseOnExceptions', { state })
-      this._exceptionState = state as 'none' | 'uncaught' | 'all'
+      await session.exceptions.setMode(state)
       return this.okJson({ ok: true, exception: state })
     }
 
@@ -684,9 +693,19 @@ export class DebuggerToolKit {
     if (!file || !line) {
       throw new Error('Either pass file + line for a line breakpoint, or exception for exception breakpoints')
     }
-    const condition = args.condition as string | undefined
-    const id = await session.setBreakpoint(file, line, condition)
-    return this.okJson({ ok: true, id, file, line, condition: condition || null })
+
+    // Delegate condition building to BreakpointManager
+    const id = await session.breakpoints.set(file, line, {
+      condition: args.condition as string | undefined,
+      logMessage: args.logMessage as string | undefined,
+      hitCount: args.hitCount != null ? String(args.hitCount) : undefined,
+    })
+
+    const result: any = { ok: true, id, file, line }
+    if (args.logMessage) result.logMessage = args.logMessage
+    if (args.hitCount) result.hitCount = args.hitCount
+    if (args.condition) result.condition = args.condition
+    return this.okJson(result)
   }
 
   private async handleBreakpoints(args: Record<string, unknown>): Promise<ToolResult> {
@@ -694,17 +713,17 @@ export class DebuggerToolKit {
 
     // Remove if requested
     if (args.remove != null) {
-      await session.removeBreakpoint(args.remove as number)
+      await session.breakpoints.remove(args.remove as number)
     }
 
-    const breakpoints = [...session.breakpoints.entries()].map(([id, bp]) => ({
-      id,
+    const breakpoints = session.breakpoints.list().map(bp => ({
+      id: bp.id,
       file: bp.file,
       line: bp.line,
-      condition: (bp as any).condition || null,
+      condition: bp.condition || null,
     }))
 
-    return this.okJson({ breakpoints, exceptionBreakpoint: this._exceptionState })
+    return this.okJson({ breakpoints, exceptionBreakpoint: session.exceptions.getMode() })
   }
 
   private async handleDisconnect(): Promise<ToolResult> {

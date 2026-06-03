@@ -559,14 +559,13 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
     await session.cdp.send('Debugger.setPauseOnExceptions', { state: 'all' })
 
     // Send a request with missing body to trigger a JSON parse error
-    // The req.json() call will throw when body is malformed
     const fetchP = fetch(`http://localhost:${APP_PORT}/api/cart/total`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: 'not-json',
-    }).catch(() => {})  // ignore response errors
+    }).catch(() => {})
 
-    // Wait for pause due to exception
+    // Wait for first pause due to exception
     const pause = await Promise.race([
       session.waitNextPause().then(() => 'paused'),
       new Promise(r => setTimeout(r, 5000)).then(() => 'timeout'),
@@ -574,28 +573,29 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
 
     if (pause === 'paused') {
       assert.ok(session.currentPause, 'should be paused on exception')
-      // The reason should indicate it's an exception
       const reason = session.currentPause?.reason
       assert.ok(
         reason === 'exception' || reason === 'promiseRejection' || reason === 'other',
         `pause reason should be exception-related, got: ${reason}`
       )
-      // Resume to let the request complete
+    }
+
+    // Disable FIRST to prevent more pauses from queuing
+    await session.cdp.send('Debugger.setPauseOnExceptions', { state: 'none' })
+
+    // Resume all queued pauses (Next.js throws many internal exceptions)
+    if (session.currentPause) {
       await session.resume()
-      // Keep resuming if there are chained exceptions
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 50; i++) {
         const next = await Promise.race([
           session.waitNextPause().then(() => 'paused'),
-          new Promise(r => setTimeout(r, 500)).then(() => 'running'),
+          new Promise(r => setTimeout(r, 200)).then(() => 'running'),
         ])
         if (next !== 'paused') break
         await session.resume()
       }
     }
-    // Even if timeout, test passes — the key thing is no crash
 
-    // Disable exception breakpoints
-    await session.cdp.send('Debugger.setPauseOnExceptions', { state: 'none' })
     await fetchP
   })
 
@@ -618,6 +618,67 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
     ])
 
     assert.equal(pause, 'running', 'should NOT pause when exception BPs are disabled')
+    await fetchP
+  })
+
+  it('logpoint logs without pausing', async () => {
+    const { session } = ctx
+
+    // Set a logpoint on the total route (line 9 — inside POST handler)
+    // The trick is condition = '(console.log(...), false)' — never pauses
+    const logMsg = 'cart has {cart.items.length} items'
+    const template = logMsg.replace(/\{([^}]+)\}/g, '${$1}')
+    const condition = `(console.log(\`[logpoint] ${template}\`), false)`
+    await session.setBreakpoint('app/api/cart/total/route.ts', 9, condition)
+
+    // Fire a request — should NOT pause (logpoint returns false)
+    const result = await postAPI('/api/cart/total', { sessionId: 'logpoint-test' })
+
+    // Verify we got a response (not blocked by pause)
+    assert.ok(result, 'should get response — logpoint should not pause')
+
+    // Brief wait to ensure no pause was triggered
+    const pause = await Promise.race([
+      session.waitNextPause().then(() => 'paused'),
+      new Promise(r => setTimeout(r, 1000)).then(() => 'running'),
+    ])
+    assert.equal(pause, 'running', 'logpoint should NOT pause execution')
+  })
+
+  it('hit count breakpoint only pauses on Nth execution', async () => {
+    const { session } = ctx
+
+    // Set a hit count BP on the add route — only pause on 3rd call
+    const counterVar = `__mypry_hit_test_${Date.now()}`
+    const hitExpr = `(globalThis.${counterVar} = (globalThis.${counterVar} || 0) + 1) >= 3`
+    await session.setBreakpoint('app/api/cart/add/route.ts', 7, hitExpr)
+
+    const sid = `hitcount-${Date.now()}`
+
+    // Call 1 and 2 — should NOT pause
+    await postAPI('/api/cart/add', { sessionId: sid, sku: 'KEY' })
+    await postAPI('/api/cart/add', { sessionId: sid, sku: 'MUG' })
+
+    // Verify no pause after 2 calls
+    const earlyPause = await Promise.race([
+      session.waitNextPause().then(() => 'paused'),
+      new Promise(r => setTimeout(r, 500)).then(() => 'running'),
+    ])
+    assert.equal(earlyPause, 'running', 'should NOT pause before hit count reached')
+
+    // Call 3 — SHOULD pause
+    const fetchP = fetch(`http://localhost:${APP_PORT}/api/cart/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sid, sku: 'PEN' }),
+    }).catch(() => null)
+
+    const thirdPause = await Promise.race([
+      session.waitNextPause().then(() => 'paused'),
+      new Promise(r => setTimeout(r, 5000)).then(() => 'timeout'),
+    ])
+    assert.equal(thirdPause, 'paused', 'should pause on 3rd execution (hit count)')
+    await session.resume()
     await fetchP
   })
 })

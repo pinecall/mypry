@@ -22,7 +22,7 @@ function findProjectRoot(dir: string): string {
   throw new Error('could not find project root from ' + dir)
 }
 const PROJECT_ROOT = findProjectRoot(__dirname)
-const MYPRY_CLI = path.join(PROJECT_ROOT, 'mypry.js')
+const MYPRY_CLI = path.join(PROJECT_ROOT, 'bin', 'mypry.js')
 const FIXTURES_DIR = path.join(PROJECT_ROOT, 'test', 'fixtures')
 
 // ─── Target spawning ───

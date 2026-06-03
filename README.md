@@ -110,6 +110,26 @@ debugger_set_breakpoint { exception: "none" }         # disable
 
 The agent reproduces the error (via curl, browser, etc.), and `debugger_state` shows exactly where the exception was thrown — file, line, locals, call stack.
 
+Exception breakpoints use **justMyCode** — they only pause in your code, not in framework internals (node_modules, Next.js, webpack runtime).
+
+### Logpoints — instrument without pausing
+
+Logpoints log a message every time a line executes — without pausing. Perfect for tracing:
+
+```
+debugger_set_breakpoint { file: "auth.ts", line: 47, logMessage: "user={user.email} role={user.role}" }
+```
+
+The `{expr}` syntax interpolates live values. Output goes to the console. The app never pauses.
+
+### Hit count — pause on the Nth execution
+
+```
+debugger_set_breakpoint { file: "loop.ts", line: 12, hitCount: 5 }
+```
+
+Only pauses on the 5th time line 12 executes. Useful for loops and batch operations.
+
 ### `debugger` statement — simplest
 
 The agent can also edit your code and drop a `debugger;` statement. When the inspector is connected and Node.js hits it, the app pauses automatically — no `set_breakpoint` call needed.
@@ -167,11 +187,11 @@ AI Agent ── stdio ──▶ mypry-bridge ── CDP ──▶ your app
 |------|-------------|
 | `debugger_connect` | Connect to V8 inspector + optionally launch a Playwright browser |
 | `debugger_disconnect` | Close everything |
-| `debugger_state` | Paused/running, file, line, locals (deep-serialized), closure vars, call stack, TypeScript source window |
-| `debugger_set_breakpoint` | File + line (optional `condition`), or exception breakpoints (`all`/`uncaught`/`none`) |
+| `debugger_state` | Paused/running, file, line, locals (deep-serialized), closure vars, call stack, return value, TypeScript source window |
+| `debugger_set_breakpoint` | File + line (optional `condition`), exception breakpoints, logpoints (`logMessage`), hit count (`hitCount`) |
 | `debugger_breakpoints` | List or remove breakpoints (includes exception breakpoint state) |
 | `debugger_eval` | JS expression — `target: "backend"` (default) or `"browser"` |
-| `debugger_step` | Step over / into / out |
+| `debugger_step` | Step over / into (smart — skips `node_modules`) / out |
 | `debugger_continue` | Resume until next breakpoint (configurable `timeoutMs`, default 5s) |
 | `debugger_browse` | Drive the browser via [AgentScript](#agentscript) |
 | `debugger_snapshot` | ARIA accessibility tree — how the agent "sees" the page |

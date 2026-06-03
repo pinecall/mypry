@@ -35,8 +35,10 @@ function killPorts() {
 
 // ── Server lifecycle ──
 
-/** Start the Next.js dev server with inspector, wait until ready. */
-export async function startServer() {
+/** Start the Next.js dev server with inspector, wait until ready.
+ *  @param {{ turbo?: boolean }} opts
+ */
+export async function startServer(opts = {}) {
   // Kill any leftover processes on our ports
   killPorts()
   await new Promise(r => setTimeout(r, 1000))
@@ -44,8 +46,11 @@ export async function startServer() {
   // Clean .next cache for deterministic state
   try { rmSync(resolve(CART_BUG_DIR, '.next'), { recursive: true, force: true }) } catch {}
 
+  const args = ['next', 'dev', '-p', String(APP_PORT)]
+  if (opts.turbo) args.push('--turbo')
+
   return new Promise((resolveP, rejectP) => {
-    const proc = spawn('npx', ['next', 'dev', '-p', String(APP_PORT)], {
+    const proc = spawn('npx', args, {
       cwd: CART_BUG_DIR,
       env: { ...process.env, NODE_OPTIONS: '--inspect=9229' },
       stdio: ['pipe', 'pipe', 'pipe'],

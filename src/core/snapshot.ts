@@ -27,6 +27,7 @@ export interface PausedSnapshot {
   source_window: SourceWindowLine[]
   locals: Record<string, unknown>
   call_stack: Array<{ function: string; file: string; line: number }>
+  return_value?: unknown
 }
 
 export interface RunningSnapshot {
@@ -156,7 +157,7 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     })
   }
 
-  return {
+  const result: PausedSnapshot = {
     status: 'paused',
     file,
     line: line1,
@@ -166,4 +167,18 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     locals: await session.getLocals(),
     call_stack: callStack,
   }
+
+  // Include return value if available (after step-over of a function call)
+  if (frame.returnValue && frame.returnValue.type !== 'undefined') {
+    try {
+      const rv = frame.returnValue
+      if (rv.value !== undefined) {
+        result.return_value = rv.value
+      } else if (rv.description) {
+        result.return_value = rv.description
+      }
+    } catch { /* ignore */ }
+  }
+
+  return result
 }
