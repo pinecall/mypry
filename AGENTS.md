@@ -130,7 +130,7 @@ Resolution chain in `BreakpointResolver` (ordered by priority):
 | `debugger_eval` | JS expression — backend (default) or browser |
 | `debugger_step` | Step over / into (smart — skips `node_modules`) / out |
 | `debugger_continue` | Resume until next breakpoint (configurable `timeoutMs`, default 5s) |
-| `debugger_browse` | Drive the browser via AgentScript |
+| `debugger_browse` | Drive the browser via JSON actions (click, fill, goto → Playwright) |
 | `debugger_snapshot` | ARIA accessibility tree of the page |
 | `debugger_inject` | Attach to a running process without `--inspect` |
 

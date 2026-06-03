@@ -23,7 +23,7 @@ Node.js ─ V8 inspector :9229 ─▶  │  DebuggerSession (orchestrator)│
                                   │   └─ SourceMapResolver         │
                                   │                                │
                                   │  BrowserToolKit (frontend)     │
-                                  │   ├─ AgentScript DSL           │
+                                  │   ├─ JSON actions (Playwright)  │
                                   │   ├─ ARIA snapshots            │
                                   │   └─ page navigation + forms   │
                                   └────────────────────────────────┘
@@ -221,21 +221,21 @@ Port 9229 conflicts are detected **before** sending the signal. If another Node 
 
 ---
 
-## AgentScript pipeline
+## Browser actions pipeline
 
-AgentScript is the built-in DSL for `debugger_browse`. It drives the browser via Playwright — one action per line.
+`debugger_browse` accepts a JSON actions array. Each action maps to a Playwright call — one action per object.
 
 ```
-debugger_browse({ script: "fill \"textbox Email\" \"alice\"\nclick \"button Sign in\"" })
+debugger_browse({ actions: [
+  { "fill": ["textbox Email", "alice"] },
+  { "click": "button Sign in" }
+]})
         │
         ▼
-  parser.ts          tokenize each line → Step[] (verb + args)
+  actions.ts         parse each action object → Playwright call
         │
         ▼
-  runtime.ts         map each Step → Playwright action
-        │
-        ▼
-  page.getByRole()   resolve ARIA selector → locator
+  resolveSelector()  resolve ARIA/CSS selector → locator
   page.fill()        Playwright executes
   page.click()
 ```
@@ -288,8 +288,9 @@ src/
 
   browser/
     toolkit.ts               # BrowserToolKit — wraps Playwright for browse/snapshot
-    parser.ts                # AgentScript DSL tokenizer
-    runtime.ts               # AgentScript verb executor (→ Playwright actions)
+    actions.ts               # JSON action runner (click, fill, goto → Playwright)
+    parser.ts                # AgentScript DSL tokenizer (deprecated, kept for compat)
+    runtime.ts               # AgentScript verb executor (deprecated, kept for compat)
     session.ts               # Browser session lifecycle
     connect.ts               # Playwright connection helpers
 ```

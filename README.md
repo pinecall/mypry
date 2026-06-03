@@ -196,7 +196,7 @@ AI Agent ── stdio ──▶ mypry-bridge ── CDP ──▶ your app
 | `debugger_eval` | JS expression — `target: "backend"` (default) or `"browser"` |
 | `debugger_step` | Step over / into (smart — skips `node_modules`) / out |
 | `debugger_continue` | Resume until next breakpoint (configurable `timeoutMs`, default 5s) |
-| `debugger_browse` | Drive the browser via [AgentScript](#agentscript) |
+| `debugger_browse` | Drive the browser via [JSON actions](#browser-actions) |
 | `debugger_snapshot` | ARIA accessibility tree — how the agent "sees" the page |
 | `debugger_inject` | Attach to a running process without `--inspect` |
 
@@ -338,7 +338,7 @@ await kit.call('debugger_disconnect')
 | Document | Description |
 |----------|-------------|
 | [**Programmatic API**](docs/programmatic-api.md) | `DebuggerToolKit`, `CDPClient`, `DebuggerSession` — for custom integrations |
-| [**Architecture**](docs/architecture.md) | Internals: breakpoint resolution, Turbopack, AgentScript pipeline |
+| [**Architecture**](docs/architecture.md) | Internals: breakpoint resolution, Turbopack, browser actions pipeline |
 
 ---
 
