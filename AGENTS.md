@@ -64,8 +64,9 @@ src/
 
   browser/
     toolkit.ts               # BrowserToolKit — wraps Playwright for browse/snapshot
-    parser.ts                # AgentScript DSL tokenizer
-    runtime.ts               # AgentScript verb executor (→ Playwright actions)
+    actions.ts               # JSON action runner (click, fill, goto → Playwright)
+    parser.ts                # AgentScript DSL tokenizer (deprecated, kept for compat)
+    runtime.ts               # AgentScript verb executor (deprecated, kept for compat)
     session.ts               # Browser session lifecycle
     connect.ts               # Playwright connection helpers
 ```
@@ -94,7 +95,8 @@ The core is split into focused modules following patterns from VS Code's
   `ExceptionPauseService` filters exception pauses from framework code.
 
 - **BrowserToolKit** (`browser/toolkit.ts`) — internal module. The
-  `debugger_browse` tool delegates here. Uses AgentScript DSL.
+  `debugger_browse` tool delegates here. Uses JSON actions (`actions.ts`)
+  with deprecated DSL fallback.
 
 ### Key patterns
 

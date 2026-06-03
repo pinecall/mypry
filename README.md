@@ -71,7 +71,10 @@ debugger_connect { port: 9229, frontend: "http://localhost:5173" }
 
 # Frontend: fill the form and submit
 debugger_snapshot                          → ARIA tree: textbox "Email", button "Sign In"
-debugger_browse { script: "fill \"textbox Email\" \"admin@test.com\"\nclick \"button Sign in\"" }
+debugger_browse { actions: [
+  { "fill": ["textbox Email", "admin@test.com"] },
+  { "click": "button Sign in" }
+]}
   → backend: paused at auth.service.ts:151
 
 # Backend: inspect the same request
@@ -216,7 +219,10 @@ debugger_continue
 ```
 debugger_connect { frontend: "http://localhost:3000" }
 debugger_snapshot     → ARIA tree
-debugger_browse { script: "fill \"textbox Email\" \"alice\"\nclick \"button Sign in\"" }
+debugger_browse { actions: [
+  { "fill": ["textbox Email", "alice"] },
+  { "click": "button Sign in" }
+]}
 debugger_eval { expr: "document.title", target: "browser" }
 ```
 
@@ -225,7 +231,10 @@ debugger_eval { expr: "document.title", target: "browser" }
 ```
 debugger_connect { port: 9229, frontend: "http://localhost:3000" }
 debugger_set_breakpoint { file: "auth.ts", line: 47 }
-debugger_browse { script: "fill \"textbox Email\" \"alice\"\nclick \"button Sign in\"" }
+debugger_browse { actions: [
+  { "fill": ["textbox Email", "alice"] },
+  { "click": "button Sign in" }
+]}
   → backend paused at auth.ts:47, locals: { email: "alice" }
 debugger_eval { expr: "req.body" }
 debugger_eval { expr: "document.cookie", target: "browser" }
@@ -264,26 +273,30 @@ Turbopack's consolidated chunk format, sectioned source maps, and hot-reload re-
 
 ---
 
-## AgentScript
+## Browser Actions
 
-`debugger_browse` uses AgentScript — a built-in DSL that translates one-line commands into Playwright actions. **AgentScript is for driving the browser**, not for backend debugging.
+`debugger_browse` accepts a JSON `actions` array. Each action is an object with one key (the verb) and its value (the argument). **No custom DSL to learn — just JSON.**
 
 **Always call `debugger_snapshot` first** to see available selectors. Then use what the snapshot returns:
 
-```
-fill "textbox Email" "alice@example.com"
-fill "textbox Password" "secret"
-click "button Sign in"
-waiturl "/dashboard"
+```json
+debugger_browse { "actions": [
+  { "fill": ["textbox Email", "alice@example.com"] },
+  { "fill": ["textbox Password", "secret"] },
+  { "click": "button Sign in" },
+  { "waiturl": "/dashboard" }
+]}
 ```
 
-| Category | Verbs |
-|----------|-------|
-| **Navigation** | `goto <url>`, `back`, `forward`, `reload`, `waiturl "<pattern>"` |
-| **Interaction** | `click`, `fill`, `clear`, `type`, `press`, `select`, `check`, `uncheck`, `hover`, `scroll`, `upload`, `ondialog` |
-| **Timing** | `wait <sel> visible`, `wait <sel> hidden`, `wait 500ms` |
+| Category | Actions |
+|----------|--------|
+| **Navigation** | `{ "goto": "url" }`, `{ "back": true }`, `{ "forward": true }`, `{ "reload": true }`, `{ "waiturl": "/path" }` |
+| **Interaction** | `{ "click": "sel" }`, `{ "fill": ["sel", "text"] }`, `{ "type": ["sel", "text"] }`, `{ "press": "Enter" }`, `{ "select": ["sel", "value"] }`, `{ "check": "sel" }`, `{ "uncheck": "sel" }`, `{ "hover": "sel" }` |
+| **Timing** | `{ "wait": "500ms" }`, `{ "wait": ["sel", "visible"] }`, `{ "wait": ["sel", "hidden"] }` |
 
-> For reading DOM values, use `debugger_eval { target: "browser" }` instead of DSL verbs. After navigation, snapshot again.
+Selectors from `debugger_snapshot`: `"button Sign In"`, `"textbox Email"`, `"link Dashboard"`. Also supports `"label:Email"`, `"placeholder:Search"`, `"#css-id"`, `".class"`.
+
+> For reading DOM values, use `debugger_eval { target: "browser" }`. After navigation, snapshot again.
 
 ---
 

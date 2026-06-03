@@ -7,7 +7,7 @@
  * Usage:
  *   const kit = new DebuggerToolKit()
  *   await kit.call('debugger_connect', { port: 9229, frontend: 'http://localhost:3000' })
- *   await kit.call('debugger_browse', { script: 'fill "label:Email" "alice"\nclick ...' })
+ *   await kit.call('debugger_browse', { actions: [{ fill: ["textbox Email", "alice"] }, { click: "button Sign in" }] })
  *   // ^ auto-detects backend breakpoint if one fires during the browse
  */
 
@@ -16,6 +16,7 @@ import { DebuggerSession } from './core/session.js'
 import { discoverTargets } from './core/targets.js'
 import { snapshot, cleanUrl, type PausedSnapshot } from './core/snapshot.js'
 import { BrowserToolKit } from './browser/toolkit.js'
+import { runActions, type BrowserAction, type ActionResult } from './browser/actions.js'
 import { execSync } from 'node:child_process'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -46,13 +47,17 @@ export const TOOLS = [
   {
     name: 'debugger_browse',
     description:
-      'Execute an AgentScript script in the browser (fill forms, click buttons, navigate). If the action triggers a backend breakpoint (e.g. clicking "Submit" hits an API endpoint), the debugger state is included automatically. IMPORTANT: always call debugger_snapshot first to see available selectors. Never guess selectors.',
+      'Execute browser actions (click, fill, navigate). Pass an array of JSON action objects. Each action has one key (the verb) and its value (the argument). If an action triggers a backend breakpoint, the response includes the pause state automatically. Call debugger_snapshot first to see selectors.',
     inputSchema: {
       type: 'object' as const,
-      required: ['script'],
       properties: {
-        script: { type: 'string', description: 'AgentScript source — one action per line. Use selectors from debugger_snapshot.' },
-        timeoutMs: { type: 'number', description: 'Per-step timeout in ms (default: 10000)' },
+        actions: {
+          type: 'array',
+          description: 'Array of action objects. Each has one key (verb) and value (args). Examples: { "click": "button Sign in" }, { "fill": ["textbox Email", "alice"] }, { "goto": "http://localhost:3000" }',
+          items: { type: 'object' },
+        },
+        script: { type: 'string', description: '(Deprecated) AgentScript DSL string. Prefer actions array.' },
+        timeoutMs: { type: 'number', description: 'Per-action timeout in ms (default: 4000)' },
       },
     },
   },
@@ -229,68 +234,76 @@ export const DEBUGGER_INSTRUCTIONS = [
   '  debugger_inject { appPort: 3000, frontend: "http://localhost:3000" }',
   '  debugger_set_breakpoint { file: "auth.controller.ts", line: 47 }',
   '  debugger_snapshot                          ← see page selectors',
-  '  debugger_browse { script: "fill \\"textbox Email\\" \\"alice@test.com\\"\\nclick \\"button Sign in\\"" }',
+  '  debugger_browse { actions: [',
+  '    { "fill": ["textbox Email", "alice@test.com"] },',
+  '    { "click": "button Sign in" }',
+  '  ]}',
   '  ← response includes backend pause if breakpoint fired!',
   '  debugger_eval { expr: "body.email" }       ← inspect backend locals',
   '  debugger_continue',
   '',
   '═══════════════════════════════════════════════════════',
-  'AGENTSCRIPT — Browser Scripting DSL',
+  'BROWSER ACTIONS — debugger_browse Reference',
   '═══════════════════════════════════════════════════════',
   '',
-  'AgentScript drives the BROWSER via debugger_browse.',
-  'It is NOT for backend debugging — it controls the UI to trigger backend code paths.',
+  'debugger_browse accepts a JSON actions array. Each action is an object',
+  'with one key (the verb) and its value (the argument or argument array).',
   '',
   'ALWAYS call debugger_snapshot FIRST to see available selectors.',
   'Never guess selectors — use what the snapshot returns.',
   '',
-  'One action per line. All selectors must be "quoted strings".',
+  'SELECTORS — from debugger_snapshot output:',
+  '  "button Sign In"         ARIA role + name (preferred)',
+  '  "textbox Email"          ARIA role + name',
+  '  "link Dashboard"         ARIA role + name',
+  '  "label:Email"            by label',
+  '  "placeholder:Search"     by placeholder',
+  '  "#id", ".class"          CSS selectors also work',
   '',
-  'SELECTORS — copy from debugger_snapshot:',
-  '  button "Sign In"       →  click "button Sign In"',
-  '  textbox "Email"        →  fill "textbox Email" "alice"',
-  '  link "Dashboard"       →  click "link Dashboard"',
-  '  "#id" ".class"         →  CSS selectors also work',
-  '  "label:Email"          →  getByLabel',
-  '  "placeholder:Search"   →  getByPlaceholder',
+  'ACTIONS:',
+  '  { "click": "button Sign In" }',
+  '  { "fill": ["textbox Email", "alice@example.com"] }',
+  '  { "type": ["textbox Search", "hello", { "delay": 100 }] }',
+  '  { "press": "Enter" }',
+  '  { "press": ["textbox Email", "Enter"] }',
+  '  { "select": ["combobox Country", "US"] }',
+  '  { "check": "checkbox Remember me" }',
+  '  { "uncheck": "checkbox Newsletter" }',
+  '  { "hover": "button Menu" }',
+  '  { "clear": "textbox Search" }',
   '',
   'NAVIGATION:',
-  '  goto <url>',
-  '  back | forward | reload',
-  '  waiturl "<pattern>"',
-  '',
-  'INTERACTION:',
-  '  click <sel>                     click element',
-  '  fill <sel> "text"              type into input (clears first)',
-  '  clear <sel>                     clear input',
-  '  type [<sel>] "text"            type char by char (fires key events)',
-  '  press [<sel>] <Key>            press key: Enter, Tab, Escape, Control+A',
-  '  select <sel> "value"           select dropdown',
-  '  check <sel> | uncheck <sel>    toggle checkbox',
-  '  hover <sel>                     hover element',
-  '  scroll <sel> into              scroll element into view',
-  '  scroll page down [N]           scroll page',
-  '  upload <sel> "path"            upload file',
-  '  ondialog accept ["text"]       handle alert/confirm/prompt',
+  '  { "goto": "http://localhost:3000/login" }',
+  '  { "back": true }',
+  '  { "forward": true }',
+  '  { "reload": true }',
+  '  { "waiturl": "/dashboard" }',
   '',
   'TIMING:',
-  '  wait <sel> visible             wait for element to appear',
-  '  wait <sel> hidden              wait for element to disappear',
-  '  wait 500ms                     fixed delay',
+  '  { "wait": "500ms" }',
+  '  { "wait": ["button Submit", "visible"] }',
+  '  { "wait": ["spinner", "hidden"] }',
   '',
-  'EXAMPLE:',
-  '  goto https://app.example.com/login',
-  '  fill "textbox Email" "alice@example.com"',
-  '  fill "textbox Password" "secret"',
-  '  click "button Sign in"',
-  '  waiturl "/dashboard"',
+  'UPLOAD / DIALOG:',
+  '  { "upload": ["input[type=file]", "/path/to/file.pdf"] }',
+  '  { "ondialog": "accept" }',
+  '  { "scroll": "down" }',
+  '  { "scroll": ["listbox Results", "down"] }',
+  '',
+  'FULL EXAMPLE:',
+  '  debugger_browse { actions: [',
+  '    { "goto": "http://localhost:3000/login" },',
+  '    { "fill": ["textbox Email", "alice@example.com"] },',
+  '    { "fill": ["textbox Password", "secret"] },',
+  '    { "click": "button Sign in" },',
+  '    { "waiturl": "/dashboard" }',
+  '  ]}',
   '',
   'TIPS:',
-  '- AgentScript is for browser control. For backend inspection, use debugger_eval.',
-  '- If you know selectors from source code, use CSS directly ("#email", ".btn"). No snapshot needed.',
+  '- For reading DOM values, use debugger_eval { expr: "...", target: "browser" }.',
   '- After navigation, call debugger_snapshot before interacting with new elements.',
-  '- For reading DOM values or asserting, use debugger_eval { expr: "...", target: "browser" }.',
   '- debugger_browse auto-detects backend pauses — if a breakpoint fires, the response includes pause state.',
+  '- If you know selectors from source code, use CSS directly ("#email", ".btn").',
   '',
   '═══════════════════════════════════════════════════════',
   'IMPORTANT BEHAVIOR',
@@ -551,15 +564,37 @@ export class DebuggerToolKit {
       throw new Error('No browser connected. Call debugger_connect with a frontend URL first.')
     }
 
-    const script = args.script as string
-    const timeoutMs = args.timeoutMs as number | undefined
+    const actions = args.actions as BrowserAction[] | undefined
+    const script = args.script as string | undefined
+    const timeoutMs = (args.timeoutMs as number) || 4000
+
+    if (!actions && !script) {
+      throw new Error('Either "actions" (JSON array) or "script" (deprecated DSL string) is required.')
+    }
 
     // Remember if we were already paused
     const wasPaused = !!this.session?.currentPause
 
-    // Run browser script
-    const browserResult = await this.browserKit.call('browser_run', { script, timeoutMs })
-    const browserData = JSON.parse(browserResult.content[0].text)
+    let browserData: Record<string, unknown>
+
+    if (actions) {
+      // ── New JSON actions path ──
+      const page = this.browserKit.page
+      if (!page) throw new Error('No browser page available')
+      const actionResult = await runActions(actions, page, timeoutMs)
+      browserData = {
+        ok: !actionResult.error,
+        completed: actionResult.completed,
+        total: actionResult.total,
+        error: actionResult.error,
+        failedAt: actionResult.failedAt,
+        needsSnapshot: actionResult.needsSnapshot,
+      }
+    } else {
+      // ── Legacy AgentScript DSL fallback ──
+      const browserResult = await this.browserKit.call('browser_run', { script, timeoutMs })
+      browserData = JSON.parse(browserResult.content[0].text)
+    }
 
     const result: Record<string, unknown> = { browser: browserData }
 
