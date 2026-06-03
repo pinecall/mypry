@@ -45,7 +45,10 @@ const snap = await kit.call('debugger_snapshot')
 
 // Drive the browser
 await kit.call('debugger_browse', {
-  script: 'fill "textbox Email" "alice"\nclick "button Sign in"'
+  actions: [
+    { fill: ['textbox Email', 'alice'] },
+    { click: 'button Sign in' },
+  ]
 })
 
 // Eval in both contexts
