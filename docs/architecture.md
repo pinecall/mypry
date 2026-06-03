@@ -10,12 +10,17 @@ How mypry works internally: components, data flow, and breakpoint resolution.
 your app                          mypry (MCP server, stdio)
 ────────                          ──────────────────────────────────
                                   ┌────────────────────────────────┐
-Node.js ─ V8 inspector :9229 ─▶  │  DebuggerSession (backend)     │
-                                  │   ├─ pause / step / eval       │
-                                  │   ├─ breakpoints (conditional) │
-                                  │   ├─ source maps (TS → JS)    │
-                                  │   ├─ Turbopack chunk matching  │
-                                  │   └─ hot-reload awareness      │
+Node.js ─ V8 inspector :9229 ─▶  │  DebuggerSession (orchestrator)│
+                                  │   ├─ BreakpointManager         │
+                                  │   │   ├─ BreakpointResolver    │
+                                  │   │   └─ Conditions             │
+                                  │   │       ├─ Expression         │
+                                  │   │       ├─ HitCount           │
+                                  │   │       └─ Logpoint           │
+                                  │   ├─ ScriptSkipper (blackbox)  │
+                                  │   ├─ SmartStepper              │
+                                  │   ├─ ExceptionPauseService     │
+                                  │   └─ SourceMapResolver         │
                                   │                                │
                                   │  BrowserToolKit (frontend)     │
                                   │   ├─ AgentScript DSL           │
@@ -43,8 +48,8 @@ debugger_connect { port: 9229, frontend: "http://localhost:3000" }
      cdp.connect()                   enable Debugger + Runtime domains
         │
         ▼
-  3. DebuggerSession(cdp)            high-level API over CDP
-     session.init()                  listen for Debugger.paused / resumed
+  3. DebuggerSession(cdp)            slim orchestrator
+     session.init()                  listen for events, apply blackbox patterns
         │
         ▼
   4. BrowserToolKit                  (if frontend URL provided)
@@ -68,57 +73,108 @@ Uses Node 22+ global `WebSocket` — no `ws` dependency.
 
 ---
 
+## Core architecture (VS Code-inspired)
+
+The core is split into focused modules following patterns from VS Code's
+[vscode-js-debug](https://github.com/nicolo-ribaudo/vscode-js-debug):
+
+### DebuggerSession (`core/session.ts`)
+
+Slim orchestrator (~290 lines). Owns CDP events, pause management, stepping,
+eval, and locals. Delegates to subsystems:
+
+### BreakpointManager (`core/breakpoints/`)
+
+Owns breakpoint lifecycle: set, remove, list. Coordinates:
+
+- **BreakpointResolver** (`resolver.ts`) — resolves user's file:line into CDP
+  locations via a priority chain (source maps → Turbopack → webpack → URL → regex)
+- **Conditions** (`conditions/`) — interface `IBreakpointCondition` with three
+  implementations:
+
+| Condition | CDP side | Server side |
+|-----------|----------|-------------|
+| `ExpressionCondition` | Wrapped in try/catch | Always pause |
+| `HitCondition` | None (always pause) | `++hits` predicate (=, >, >=, <, <=, %) |
+| `LogpointCondition` | `console.log(...), false` | Never pause |
+
+### SourceMapResolver (`core/sources/`)
+
+All source map operations:
+- `resolveSourceToCompiled()` — forward: original → generated
+- `resolveTypeScriptBreakpoint()` — find .js whose map references a .ts file
+- `resolveOriginalPosition()` — reverse: compiled → original (for snapshots)
+- **Finders**: `findTurbopackChunk()`, `findWebpackScript()`, `matchScript()`
+
+### ScriptSkipper (`core/skipper/`)
+
+- **ScriptSkipper** — uses V8's `Debugger.setBlackboxPatterns` for native
+  script skipping during stepping. Much more efficient than manual stepOut loops.
+- **SmartStepper** — stateful auto-step: if stepInto lands in framework code,
+  auto-stepOut with a backout threshold (10 steps).
+- **ExceptionPauseService** — filters exception pauses from framework code
+  (justMyCode). Checks the top frame's URL against `isFrameworkCode()`.
+
+### Key patterns
+
+| Pattern | Example |
+|---------|---------|
+| Interface-first | `IBreakpointCondition` with `breakCondition` + `shouldStayPaused()` |
+| Static factory | `HitCondition.parse("> 5")`, `ExpressionCondition.parse(expr)` |
+| Pure functions | `wrapCondition()`, `shouldStepOver()`, `isFrameworkCode()` |
+| `const enum` | `BreakpointKind`, `ExceptionBreakMode`, `StepOverReason` |
+| Server-side state | Hit counts use `++this.hits` (not CDP globalThis hacks) |
+
+---
+
 ## Breakpoint resolution
 
-When you call `set_breakpoint({ file: "route.ts", line: 9 })`, the resolution depends on the bundler:
+When you call `set_breakpoint({ file: "route.ts", line: 9 })`, the `BreakpointResolver` tries strategies in priority order:
 
-### Plain Node.js (Express, Fastify)
-
-Direct URL matching — the script URL ends with the filename. Breakpoint set at the exact line via `Debugger.setBreakpointByUrl`.
-
-### TypeScript (tsc / Vite / Remix)
+### 1. TypeScript source map
 
 ```
 route.ts:9
-  │
-  ▼  Find loaded scripts whose source map references route.ts
+  │  Find loaded .js scripts whose source map references route.ts
   │  (inline data: URLs for Vite, .map files for tsc)
-  │
-  ▼  Parse the source map (source-map library)
-  │
-  ▼  Reverse-map: original line 9 → compiled line 12
-  │
-  ▼  Set breakpoint on compiled .js at line 12
+  ▼  generatedPositionFor(source, line) → compiled line 12
+  ▼  setBreakpointByUrl with URL regex (HMR-resilient)
 ```
 
-mypry finds `.js` scripts whose source maps reference `route.ts`, then uses the `source-map` library to reverse-map the original TypeScript line to the compiled JavaScript line.
-
-### Turbopack (Next.js)
-
-Turbopack is the most complex case. Modules are compiled into consolidated chunks like `[root-of-the-server]__HASH._.js`. The module filename does NOT appear in the chunk URL.
-
-**Resolution chain:**
+### 2. Turbopack chunk (Next.js)
 
 ```
 route.ts:9
-  │
-  ▼  1. Scan chunk source for "[project]/.../route.ts" declaration
-  │     (initial load: module name embedded in source)
-  │     (hot-reload: module path in URL query param ?id=[project]/...)
-  │
-  ▼  2. Find first function definition after module start
-  │     compiled line 52: async function GET(request) {
-  │
-  ▼  3. Read user's source file from disk
-  │     source line 2: export async function GET(request) {
-  │
-  ▼  4. Compute offset: compiled_func(52) - source_func(2) = 50
-  │     target line: 50 + user_line(9) = 59
-  │
-  ▼  5. Set breakpoint via Debugger.setBreakpoint (by scriptId + line)
-  │     Exact: no regex, no guessing
-  │
-  ▼  6. After hot-reload: prefer highest scriptId (most recent chunk)
+  │  Find Turbopack chunks (.next/server/chunks/_HASH._.js)
+  │  whose URL or source references the module
+  ▼  Parse sectioned source map → generatedPositionFor()
+  ▼  setBreakpointByUrl with URL regex
+```
+
+### 3. webpack-internal (Next.js 14)
+
+```
+route.ts:9
+  │  Find webpack-internal:///(rsc)/./app/.../route.ts scripts
+  ▼  Parse inline source map → generatedPositionFor()
+  ▼  setBreakpointByUrl with URL regex (survives HMR)
+```
+
+### 4. Direct URL match
+
+```
+route.ts:9
+  │  Match script URL by full path or basename
+  ▼  If source map: forward-map line
+  ▼  setBreakpoint by scriptId
+```
+
+### 5. urlRegex fallback
+
+```
+route.ts:9
+  ▼  setBreakpointByUrl with escaped file pattern
+     CDP binds lazily when a matching script loads
 ```
 
 ### Sectioned source maps
@@ -140,7 +196,7 @@ Turbopack emits **indexed/sectioned** source maps:
 }
 ```
 
-The root-level `sources` is empty — all source info is inside `sections[].map`. mypry detects this and iterates through sections to find the correct inner map.
+The root-level `sources` is empty — all source info is inside `sections[].map`. The `source-map` library's `SourceMapConsumer` handles both formats.
 
 ---
 
@@ -198,21 +254,44 @@ In order of precedence:
 
 ```
 src/
-  mcp-bridge.ts         # MCP stdio server entry — the "mypry-bridge" binary
-  fullstack-toolkit.ts  # DebuggerToolKit — 11 MCP tools, inject logic, MCP instructions
+  mcp-bridge.ts              # Entry point — MCP stdio server ("mypry-bridge" binary)
+  fullstack-toolkit.ts       # DebuggerToolKit — all 11 tools + MCP instructions
   core/
-    cdp-client.ts       # Chrome DevTools Protocol client (WebSocket, zero deps)
-    session.ts          # Debugger session: breakpoints, eval, stepping, Turbopack
-    snapshot.ts         # Pause state formatting (file, line, locals, source window)
-    sourcemap.ts        # TypeScript source map resolution (flat + sectioned)
-    targets.ts          # Inspector target discovery (HTTP probe)
-    index.ts            # Public re-exports for mypry/core
+    types.ts                 # Shared interfaces (IScriptEntry, IBreakpointEntry, etc.)
+    session.ts               # DebuggerSession — slim orchestrator (~290 lines)
+    cdp-client.ts            # CDP WebSocket client (zero deps, ~80 lines)
+    snapshot.ts              # Formats pause state for the agent
+    sourcemap.ts             # Compiled→original position resolution (for snapshots)
+    targets.ts               # V8 inspector target discovery
+    index.ts                 # Public re-exports (mypry/core)
+
+    breakpoints/
+      index.ts               # BreakpointManager — lifecycle + CDP communication
+      resolver.ts            # BreakpointResolver — resolution chain
+      conditions/
+        index.ts             # IBreakpointCondition interface + factory
+        expression.ts        # Conditional BPs — try/catch wrapped for safety
+        hit-count.ts         # Server-side hit counting (= > >= < <= %)
+        logpoint.ts          # Logpoints — console.log + continue
+
+    sources/
+      index.ts               # Source map resolution (source→compiled + compiled→source)
+      script-matcher.ts      # URL matching with priority (full path > basename)
+      turbopack.ts           # Turbopack chunk finder
+      webpack.ts             # webpack-internal:// script finder
+
+    skipper/
+      index.ts               # ScriptSkipper — V8 Debugger.setBlackboxPatterns
+      smart-stepping.ts      # SmartStepper — auto-step through framework code
+      exception-pause.ts     # ExceptionPauseService — exception filtering
+      patterns.ts            # Blackbox pattern definitions + isFrameworkCode()
+
   browser/
-    toolkit.ts          # BrowserToolKit — browse, snapshot, DSL runner
-    parser.ts           # AgentScript parser (tokenizer → Step[])
-    runtime.ts          # AgentScript step executor (verb → Playwright action)
-    session.ts          # Browser session (launch / connect / close)
-    connect.ts          # Playwright connection helpers
+    toolkit.ts               # BrowserToolKit — wraps Playwright for browse/snapshot
+    parser.ts                # AgentScript DSL tokenizer
+    runtime.ts               # AgentScript verb executor (→ Playwright actions)
+    session.ts               # Browser session lifecycle
+    connect.ts               # Playwright connection helpers
 ```
 
 ---
