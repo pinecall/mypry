@@ -91,10 +91,24 @@ The agent sets a breakpoint by file and line. **No edits, no restart, no hot-rel
 ```
 debugger_set_breakpoint { file: "auth.ts", line: 47 }
 # trigger the code path...
-debugger_state → paused at auth.ts:47, locals visible
+debugger_state → paused at auth.ts:47
+  locals: { user: { email: "admin", role: "viewer" }, token: "abc..." }
+  call_stack: [{ fn: "validateUser", file: "auth.ts", line: 47 }, ...]
 ```
 
 This is the recommended approach — the agent doesn't touch your source code.
+
+### Exception breakpoints — find the error without knowing where it is
+
+When an agent doesn't know *where* an error is thrown, it can pause on **any** exception:
+
+```
+debugger_set_breakpoint { exception: "all" }         # pause on every throw
+debugger_set_breakpoint { exception: "uncaught" }     # only unhandled errors
+debugger_set_breakpoint { exception: "none" }         # disable
+```
+
+The agent reproduces the error (via curl, browser, etc.), and `debugger_state` shows exactly where the exception was thrown — file, line, locals, call stack.
 
 ### `debugger` statement — simplest
 
@@ -153,12 +167,12 @@ AI Agent ── stdio ──▶ mypry-bridge ── CDP ──▶ your app
 |------|-------------|
 | `debugger_connect` | Connect to V8 inspector + optionally launch a Playwright browser |
 | `debugger_disconnect` | Close everything |
-| `debugger_state` | Paused/running, file, line, function, locals, source window |
-| `debugger_set_breakpoint` | File + line, optional `condition`. Source maps handled automatically |
-| `debugger_breakpoints` | List or remove breakpoints |
+| `debugger_state` | Paused/running, file, line, locals (deep-serialized), closure vars, call stack, TypeScript source window |
+| `debugger_set_breakpoint` | File + line (optional `condition`), or exception breakpoints (`all`/`uncaught`/`none`) |
+| `debugger_breakpoints` | List or remove breakpoints (includes exception breakpoint state) |
 | `debugger_eval` | JS expression — `target: "backend"` (default) or `"browser"` |
 | `debugger_step` | Step over / into / out |
-| `debugger_continue` | Resume until next breakpoint |
+| `debugger_continue` | Resume until next breakpoint (configurable `timeoutMs`, default 5s) |
 | `debugger_browse` | Drive the browser via [AgentScript](#agentscript) |
 | `debugger_snapshot` | ARIA accessibility tree — how the agent "sees" the page |
 | `debugger_inject` | Attach to a running process without `--inspect` |

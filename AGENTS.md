@@ -71,12 +71,12 @@ See [docs/architecture.md](docs/architecture.md) for the full resolution chains.
 |------|-------------|
 | `debugger_connect` | Connect to V8 inspector + optionally launch browser |
 | `debugger_disconnect` | Close everything |
-| `debugger_state` | Paused/running, file, line, locals, source window |
-| `debugger_set_breakpoint` | File + line, optional condition |
-| `debugger_breakpoints` | List or remove breakpoints |
+| `debugger_state` | Paused/running, file, line, locals (deep-serialized), closure vars, call stack, TS source window |
+| `debugger_set_breakpoint` | File + line (optional condition), OR exception breakpoints (`all`/`uncaught`/`none`) |
+| `debugger_breakpoints` | List or remove breakpoints (includes exception breakpoint state) |
 | `debugger_eval` | JS expression — backend (default) or browser |
 | `debugger_step` | Step over / into / out |
-| `debugger_continue` | Resume until next breakpoint |
+| `debugger_continue` | Resume until next breakpoint (configurable `timeoutMs`, default 5s) |
 | `debugger_browse` | Drive the browser via AgentScript |
 | `debugger_snapshot` | ARIA accessibility tree of the page |
 | `debugger_inject` | Attach to a running process without --inspect |

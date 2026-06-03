@@ -144,40 +144,59 @@ export class DebuggerSession {
   async getLocals(): Promise<Record<string, unknown>> {
     const frame = this.topFrame()
     if (!frame) return {}
-    const local = frame.scopeChain.find((s: any) => s.type === 'local')
-    if (!local) return {}
-    const r = await this.cdp.send('Runtime.getProperties', {
-      objectId: local.object.objectId,
-      ownProperties: true,
-    }) as any
+
     const out: Record<string, unknown> = {}
     const deepResolves: Promise<void>[] = []
 
-    for (const p of r.result || []) {
-      if (!p.value) { out[p.name] = '[unset]'; continue }
-      const v = p.value
-      // Primitives — use directly
-      if (v.value !== undefined) {
-        out[p.name] = v.value
-      } else if (v.type === 'function') {
-        out[p.name] = `[Function: ${v.description?.split('(')[0]?.trim() || 'anon'}]`
-      } else if (v.type === 'object' && v.objectId) {
-        // Deep-serialize objects via eval (handles Proxy, circular refs, Vue refs)
-        const name = p.name
-        deepResolves.push(
-          this.evalInFrame(name).then((er: any) => {
-            if (er?.result?.value !== undefined) {
-              out[name] = er.result.value
-            } else {
-              out[name] = v.description || `[${v.subtype || v.type}]`
-            }
-          }).catch(() => {
-            out[name] = v.description || `[${v.subtype || v.type}]`
-          })
-        )
-      } else {
-        out[p.name] = v.description || `[${v.type}]`
+    // Process a scope's properties into the output map
+    const processScope = async (objectId: string, target: Record<string, unknown>) => {
+      const r = await this.cdp.send('Runtime.getProperties', {
+        objectId,
+        ownProperties: true,
+      }) as any
+      for (const p of r.result || []) {
+        if (target[p.name] !== undefined) continue // local takes precedence
+        if (!p.value) { target[p.name] = '[unset]'; continue }
+        const v = p.value
+        if (v.value !== undefined) {
+          target[p.name] = v.value
+        } else if (v.type === 'function') {
+          target[p.name] = `[Function: ${v.description?.split('(')[0]?.trim() || 'anon'}]`
+        } else if (v.type === 'object' && v.objectId) {
+          const name = p.name
+          deepResolves.push(
+            this.evalInFrame(name).then((er: any) => {
+              if (er?.result?.value !== undefined) {
+                target[name] = er.result.value
+              } else {
+                target[name] = v.description || `[${v.subtype || v.type}]`
+              }
+            }).catch(() => {
+              target[name] = v.description || `[${v.subtype || v.type}]`
+            })
+          )
+        } else {
+          target[p.name] = v.description || `[${v.type}]`
+        }
       }
+    }
+
+    // Local scope (function parameters + local variables)
+    const local = frame.scopeChain.find((s: any) => s.type === 'local')
+    if (local?.object?.objectId) {
+      await processScope(local.object.objectId, out)
+    }
+
+    // Closure scopes (variables from parent functions / module scope)
+    const closureVars: Record<string, unknown> = {}
+    const closures = frame.scopeChain.filter((s: any) => s.type === 'closure')
+    for (const closure of closures) {
+      if (closure.object?.objectId) {
+        await processScope(closure.object.objectId, closureVars)
+      }
+    }
+    if (Object.keys(closureVars).length > 0) {
+      out.__closure__ = closureVars
     }
 
     // Resolve all deep serializations in parallel
@@ -410,13 +429,8 @@ export class DebuggerSession {
         }
         if (condition) bpParams.condition = condition
         const sr = await this.cdp.send('Debugger.setBreakpointByUrl', bpParams) as any
-        if (!sr.locations?.length) {
-          throw new Error(
-            `Breakpoint registered but did not bind to any location. ` +
-            `File "${filePattern}" line ${line} may not contain executable code at that line. ` +
-            `Try a nearby line with actual code (not a comment or blank line).`
-          )
-        }
+        // Note: locations may be empty for urlRegex BPs — they bind lazily when
+        // a matching script loads (e.g. after HMR). Don't throw here.
         const id = ++this._nextBpId
         this.breakpoints.set(id, { file: filePattern, line, cdpId: sr.breakpointId, condition })
         return id

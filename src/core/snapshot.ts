@@ -26,6 +26,7 @@ export interface PausedSnapshot {
   reason: string | null
   source_window: SourceWindowLine[]
   locals: Record<string, unknown>
+  call_stack: Array<{ function: string; file: string; line: number }>
 }
 
 export interface RunningSnapshot {
@@ -39,6 +40,27 @@ export function cleanUrl(u: string | undefined): string {
 
   // Strip file:// protocol
   let cleaned = u.replace(/^file:\/\//, '')
+
+  // Handle webpack-internal:// URLs from Next.js
+  // e.g. webpack-internal:///(rsc)/./app/api/cart/total/route.ts
+  const wpMatch = cleaned.match(/^webpack-internal:\/\/\/.*?\/\.\/(.+?)(?:\?.*)?$/)
+  if (wpMatch) {
+    const relPath = wpMatch[1]
+    // Try to resolve to an absolute path on disk
+    const cwd = process.cwd()
+    const candidates = [cwd]
+    let dir = cwd
+    for (let i = 0; i < 5; i++) {
+      dir = pathResolve(dir, '..')
+      candidates.push(dir)
+    }
+    for (const root of candidates) {
+      const candidate = pathResolve(root, relPath)
+      if (existsSync(candidate)) return candidate
+    }
+    // Couldn't resolve — return the relative path (still better than the URL)
+    return relPath
+  }
 
   // Handle Vite dev server URLs: http://localhost:PORT/src/... → /PROJECT_ROOT/src/...
   // These appear when debugging Chrome with Vite running
@@ -90,20 +112,21 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
   const scriptId = frame.location.scriptId
   const s = await session.getSource(scriptId)
   const compiledLine = frame.location.lineNumber   // 0-based
-  const compiledFile = cleanUrl(s?.url)
+  const rawUrl = s?.url || ''
   const compiledSource = s?.source || ''
 
-  // Try source map resolution: dist/foo.js → src/foo.ts
-  let file = compiledFile
+  // Try source map resolution using the RAW URL (needs protocol info for webpack-internal detection)
+  let file = cleanUrl(rawUrl)
   let line1 = compiledLine + 1  // 1-based
   let sourceLines = compiledSource.split('\n')
 
-  const original = await resolveOriginalPosition(compiledFile, compiledSource, line1, 0)
+  const original = await resolveOriginalPosition(rawUrl, compiledSource, line1, 0)
   if (original) {
     file = original.source
     line1 = original.line
     // Read the original .ts source for the source window
-    const origSource = readOriginalSource(original.source)
+    // Priority: disk file → source map's embedded sourcesContent
+    const origSource = readOriginalSource(original.source) || original.sourceContent
     if (origSource) {
       sourceLines = origSource.split('\n')
     }
@@ -119,6 +142,20 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     sourceWindow.push({ line: i + 1, text: sourceLines[i] ?? '', current: i === currentIdx })
   }
 
+  // Build call stack from all frames (up to 10)
+  const callStack: Array<{ function: string; file: string; line: number }> = []
+  const allFrames = session.currentPause?.callFrames || []
+  for (let i = 0; i < Math.min(allFrames.length, 10); i++) {
+    const f = allFrames[i]
+    const fScript = session.scripts.get(f.location.scriptId)
+    const fUrl = cleanUrl(fScript?.url)
+    callStack.push({
+      function: f.functionName || '<anon>',
+      file: fUrl,
+      line: f.location.lineNumber + 1,
+    })
+  }
+
   return {
     status: 'paused',
     file,
@@ -127,5 +164,6 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     reason: session.currentPause?.reason || null,
     source_window: sourceWindow,
     locals: await session.getLocals(),
+    call_stack: callStack,
   }
 }

@@ -12,9 +12,10 @@ import path from 'node:path'
 const consumerCache = new Map<string, SourceMapConsumer | null>()
 
 export interface OriginalPosition {
-  source: string  // absolute path to original .ts file
+  source: string  // absolute path to original .ts file (or relative if not found on disk)
   line: number
   column: number | null
+  sourceContent: string | null  // original source from source map's sourcesContent
 }
 
 /**
@@ -84,9 +85,44 @@ export async function resolveOriginalPosition(
   for (let col = column; col < 80; col++) {
     const pos = consumer.originalPositionFor({ line, column: col })
     if (pos.source && pos.line !== null) {
-      const dir = path.dirname(filePath)
-      const absoluteSource = path.resolve(dir, pos.source)
-      return { source: absoluteSource, line: pos.line, column: pos.column }
+      let absoluteSource: string
+
+      if (filePath.includes('webpack-internal://')) {
+        // webpack-internal URLs: path.dirname() produces garbage.
+        // Source map sources look like: webpack://mypry-demo/./app/api/cart/total/route.ts?47a1
+        // Strip the webpack:// prefix and query params to get a resolvable path.
+        let cleanSource = pos.source
+          .replace(/^webpack:\/\/[^/]*\//, '')  // strip webpack://pkg-name/
+          .replace(/^\.\/?/, '')                 // strip leading ./
+          .replace(/\?.*$/, '')                  // strip ?47a1 query params
+
+        const cwd = process.cwd()
+        const candidates = [cwd]
+        let dir = cwd
+        for (let i = 0; i < 5; i++) {
+          dir = path.resolve(dir, '..')
+          candidates.push(dir)
+        }
+
+        absoluteSource = cleanSource // fallback: relative path
+        for (const root of candidates) {
+          const candidate = path.resolve(root, cleanSource)
+          if (fs.existsSync(candidate)) {
+            absoluteSource = candidate
+            break
+          }
+        }
+      } else {
+        const dir = path.dirname(filePath)
+        absoluteSource = path.resolve(dir, pos.source)
+      }
+
+      return {
+        source: absoluteSource,
+        line: pos.line,
+        column: pos.column,
+        sourceContent: consumer.sourceContentFor(pos.source, true) || null,
+      }
     }
   }
 
