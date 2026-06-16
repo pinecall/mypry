@@ -56,7 +56,10 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "npm run build && node --test tests/serialize.test.mjs tests/state-locals.test.mjs tests/tool-output.test.mjs",
-    "test:integration": "npm run build && node --test tests/integration/*.test.mjs",
+    "test:inject": "npm run build && node --test tests/integration/inject.test.mjs",
+    "test:fullstack": "npm run build && node --test tests/integration/fullstack.test.mjs",
+    "test:nextjs": "npm run build && node --test --test-concurrency=1 tests/integration/webpack-breakpoints.test.mjs tests/integration/turbopack-breakpoints.test.mjs",
+    "test:integration": "npm run build && node --test --test-concurrency=1 tests/integration/inject.test.mjs tests/integration/fullstack.test.mjs tests/integration/webpack-breakpoints.test.mjs tests/integration/turbopack-breakpoints.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {

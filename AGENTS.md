@@ -22,20 +22,28 @@ real install pointing at old code (this once served a long-dead API and hid
 a `npm run build` here is what the agent actually runs. `build` cleans `dist/`
 first, so removed source never lingers as an orphan `.js`.
 
-Tests:
+Tests (CI runs all of these as separate jobs — see `.github/workflows/ci.yml`):
 
 ```bash
-npm test                  # build + fast unit/e2e tests (serializer, bounded state) — gates releases
-npm run test:integration  # build + real Next.js dev-server tests (heavier)
+npm test               # build + fast unit/e2e (serializer, bounded state, tool shapes) — release gate
+npm run test:inject    # debugger_inject into a plain Node process (no --inspect)
+npm run test:fullstack # browser click → backend pause (needs Playwright chromium)
+npm run test:nextjs    # real Next.js: webpack + turbopack breakpoint resolution
+npm run test:integration  # all of the integration suites above
 ```
 
 - `tests/serialize.test.mjs` — the bounded serializer (limits, redaction,
   framework summary) + the injected-string path.
 - `tests/state-locals.test.mjs` — end-to-end through real CDP: a plain `http`
   server pauses and the snapshot is bounded/redacted/justMyCode.
-- `tests/integration/*` — run against the `tests/fixtures/cart-bug/` Next.js 14
-  app (planted bug) to verify breakpoint resolution, HMR survival, conditional
-  breakpoints, eval, step-over, and reconnection.
+- `tests/tool-output.test.mjs` — each tool's response shape via the real toolkit.
+- `tests/integration/inject.test.mjs` — the `debugger_inject` attach path.
+- `tests/integration/fullstack.test.mjs` — connect+frontend, snapshot, browse →
+  auto-attached backend pause, `eval target:browser` (drives the
+  [`examples/login-bug`](examples/login-bug) app).
+- `tests/integration/{webpack,turbopack}-breakpoints.test.mjs` — run against the
+  `tests/fixtures/cart-bug/` Next.js 14 app (planted bug) to verify breakpoint
+  resolution, HMR survival, conditional breakpoints, eval, step-over, reconnection.
 
 ## Source layout
 

@@ -3,6 +3,16 @@
 All notable changes to mypry will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- **CI** (`.github/workflows/ci.yml`) covering everything as separate jobs:
+  build + fast suite on Node 22/24, `debugger_inject` e2e, fullstack browser
+  (Playwright), and Next.js webpack + turbopack breakpoint resolution.
+- `tests/integration/inject.test.mjs` and `tests/integration/fullstack.test.mjs`
+  (the latter drives the `examples/login-bug` app: browser click → backend
+  pause), plus `test:inject` / `test:fullstack` / `test:nextjs` npm scripts.
+
 ## [0.2.0] — 2026-06-16
 
 ### Added

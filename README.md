@@ -7,6 +7,7 @@
 Pause, step, and inspect live state across your **Node.js backend and browser frontend — in a single session** — and hand it all to your AI agent over MCP.
 
 [![npm](https://img.shields.io/npm/v/mypry.svg)](https://www.npmjs.com/package/mypry)
+[![CI](https://github.com/pinecall/mypry/actions/workflows/ci.yml/badge.svg)](https://github.com/pinecall/mypry/actions/workflows/ci.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A522-43853d.svg)](https://nodejs.org)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
