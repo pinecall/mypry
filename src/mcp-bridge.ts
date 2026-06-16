@@ -24,7 +24,7 @@ async function main() {
   const kit = new DebuggerToolKit()
 
   const server = new Server(
-    { name: 'mypry', version: '0.3.0' },
+    { name: 'mypry', version: '0.1.0' },
     {
       capabilities: { tools: {} },
       instructions: DEBUGGER_INSTRUCTIONS,
