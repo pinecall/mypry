@@ -7,6 +7,8 @@
 
 import type { DebuggerSession } from './session.js'
 import { resolveOriginalPosition, readOriginalSource } from './sourcemap.js'
+import { isFrameworkCode } from './skipper/patterns.js'
+import { DEFAULT_LIMITS, type SerializeLimits } from './serialize.js'
 import { existsSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 
@@ -28,6 +30,18 @@ export interface PausedSnapshot {
   locals: Record<string, unknown>
   call_stack: Array<{ function: string; file: string; line: number }>
   return_value?: unknown
+  /** Full, unbounded value of an `expand` path (drill-down on demand). */
+  expanded?: { path: string; value: unknown }
+}
+
+/** Options controlling how a pause snapshot is built. */
+export interface SnapshotOpts {
+  /** Serialization limits for locals (defaults to {@link DEFAULT_LIMITS}). */
+  limits?: SerializeLimits
+  /** Include framework (node_modules/internal) call-stack frames. Default: false. */
+  fullStack?: boolean
+  /** Evaluate this path unbounded and attach the result as `expanded`. */
+  expand?: string
 }
 
 export interface RunningSnapshot {
@@ -107,7 +121,8 @@ export function formatValue(v: unknown): string {
   return String(v)
 }
 
-export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
+export async function snapshot(session: DebuggerSession, opts: SnapshotOpts = {}): Promise<Snapshot> {
+  const limits = opts.limits ?? DEFAULT_LIMITS
   const frame = session.topFrame()
   if (!frame) return { status: 'running' }
   const scriptId = frame.location.scriptId
@@ -143,16 +158,19 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     sourceWindow.push({ line: i + 1, text: sourceLines[i] ?? '', current: i === currentIdx })
   }
 
-  // Build call stack from all frames (up to 10)
+  // Build call stack. Default: justMyCode — keep the top frame (where we're
+  // paused) plus any non-framework frames; drop node_modules/internal noise.
+  // `fullStack:true` opts back into the raw chain.
   const callStack: Array<{ function: string; file: string; line: number }> = []
   const allFrames = session.currentPause?.callFrames || []
-  for (let i = 0; i < Math.min(allFrames.length, 10); i++) {
+  for (let i = 0; i < Math.min(allFrames.length, 12); i++) {
     const f = allFrames[i]
     const fScript = session.scripts.get(f.location.scriptId)
-    const fUrl = cleanUrl(fScript?.url)
+    const rawUrl = fScript?.url || ''
+    if (!opts.fullStack && i !== 0 && isFrameworkCode(rawUrl)) continue
     callStack.push({
       function: f.functionName || '<anon>',
-      file: fUrl,
+      file: cleanUrl(rawUrl),
       line: f.location.lineNumber + 1,
     })
   }
@@ -164,8 +182,19 @@ export async function snapshot(session: DebuggerSession): Promise<Snapshot> {
     function: frame.functionName || '<anon>',
     reason: session.currentPause?.reason || null,
     source_window: sourceWindow,
-    locals: await session.getLocals(),
+    locals: await session.getLocals(limits),
     call_stack: callStack,
+  }
+
+  // Drill-down: expand one path unbounded (the agent asked for it explicitly).
+  if (opts.expand) {
+    try {
+      const er = await session.evalInFrame(opts.expand) as any
+      const value = er?.result?.value !== undefined ? er.result.value : (er?.result?.description ?? null)
+      result.expanded = { path: opts.expand, value }
+    } catch (e: any) {
+      result.expanded = { path: opts.expand, value: `[expand error] ${e?.message ?? e}` }
+    }
   }
 
   // Include return value if available (after step-over of a function call)

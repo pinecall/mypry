@@ -10,21 +10,32 @@ mypry is a fullstack debugger for AI agents. It's an MCP server (stdio) that giv
 
 ```bash
 npm install
-npm run build        # tsc → dist/
+npm run build        # clean dist/ + tsc → dist/
 npm run watch        # tsc --watch
+npm link             # ← REQUIRED for local dev (see below)
 ```
 
-Integration tests run against a real Next.js dev server (no mocks):
+**`npm link` is required for local dev.** The MCP host runs the global
+`mypry-bridge` binary. Without `npm link`, that global can silently be a stale
+real install pointing at old code (this once served a long-dead API and hid
+`debugger_inject`). `npm link` repoints the global bin at this working tree, so
+a `npm run build` here is what the agent actually runs. `build` cleans `dist/`
+first, so removed source never lingers as an orphan `.js`.
+
+Tests:
 
 ```bash
-npm test                          # build + run integration tests
-npm run test:integration          # same
-node --test tests/integration/webpack-breakpoints.test.mjs  # direct
+npm test                  # build + fast unit/e2e tests (serializer, bounded state) — gates releases
+npm run test:integration  # build + real Next.js dev-server tests (heavier)
 ```
 
-The test fixture lives in `tests/fixtures/cart-bug/` — a Next.js 14 app with
-a planted state-management bug used to verify breakpoint resolution, HMR
-survival, conditional breakpoints, eval, step-over, and reconnection.
+- `tests/serialize.test.mjs` — the bounded serializer (limits, redaction,
+  framework summary) + the injected-string path.
+- `tests/state-locals.test.mjs` — end-to-end through real CDP: a plain `http`
+  server pauses and the snapshot is bounded/redacted/justMyCode.
+- `tests/integration/*` — run against the `tests/fixtures/cart-bug/` Next.js 14
+  app (planted bug) to verify breakpoint resolution, HMR survival, conditional
+  breakpoints, eval, step-over, and reconnection.
 
 ## Source layout
 

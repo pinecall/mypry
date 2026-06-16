@@ -15,6 +15,13 @@ import { CDPClient } from './cdp-client.js'
 import type { IScriptEntry } from './types.js'
 import { BreakpointManager } from './breakpoints/index.js'
 import { ScriptSkipper, SmartStepper, ExceptionPauseService } from './skipper/index.js'
+import {
+  DEFAULT_LIMITS,
+  buildSerializerExpr,
+  clampPrimitive,
+  SECRET_KEY_RE,
+  type SerializeLimits,
+} from './serialize.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -127,54 +134,41 @@ export class DebuggerSession {
    * When paused: evaluates in the top frame scope (access locals).
    * When running: evaluates in global scope.
    *
-   * Includes smart serialization for Vue ref(), Pinia $state, and
-   * circular-safe JSON.
+   * Two serialization modes:
+   * - `opts.limits` set → BOUNDED: collapse in-frame via the shared
+   *   {@link buildSerializerExpr} (depth/breadth/string caps, framework
+   *   summarization, secret redaction). Used for locals/state.
+   * - no limits → UNBOUNDED deep serialization (Vue ref / Pinia / circular
+   *   safe). This is the drill-down escape hatch behind `debugger_eval`.
    */
-  async evalInFrame(expr: string): Promise<any> {
+  async evalInFrame(expr: string, opts: { limits?: SerializeLimits } = {}): Promise<any> {
     const frame = this.topFrame()
+    const limits = opts.limits
+
     if (!frame) {
+      // Running — evaluate in global scope.
       return this.cdp.send('Runtime.evaluate', {
-        expression: expr,
+        expression: limits ? buildSerializerExpr(expr, limits) : expr,
         returnByValue: true,
       })
     }
 
     return this.cdp.send('Debugger.evaluateOnCallFrame', {
       callFrameId: frame.callFrameId,
-      expression: `(function(__expr) {
-        try {
-          var v = __expr;
-          if (v && v.__v_isRef) v = v.value;
-          if (v && v.$state) v = JSON.parse(JSON.stringify(v.$state));
-          if (v && v.__v_raw) v = v.__v_raw;
-          if (v === null) return null;
-          if (v === undefined) return undefined;
-          if (typeof v === 'string') return v;
-          if (typeof v === 'number' || typeof v === 'boolean') return v;
-          if (typeof v === 'function') return '[Function: ' + (v.name || 'anon') + ']';
-          var seen = new WeakSet();
-          return JSON.parse(JSON.stringify(v, function(k, val) {
-            if (typeof val === 'object' && val !== null) {
-              if (val.__v_isRef) return val.value;
-              if (val.__v_raw) val = val.__v_raw;
-              if (seen.has(val)) return '[Circular]';
-              seen.add(val);
-            }
-            if (typeof val === 'function') return '[Function: ' + (val.name || 'anon') + ']';
-            return val;
-          }));
-        } catch(e) {
-          return '[eval error] ' + e.message;
-        }
-      })(${expr})`,
+      expression: limits ? buildSerializerExpr(expr, limits) : deepEvalExpr(expr),
       returnByValue: true,
     })
   }
 
   // ── Locals ─────────────────────────────────────────────────────────
 
-  /** Get all local and closure variables from the top call frame */
-  async getLocals(): Promise<Record<string, unknown>> {
+  /**
+   * Get all local and closure variables from the top call frame, bounded by
+   * `limits` (defaults to {@link DEFAULT_LIMITS}). Primitives are clamped/
+   * redacted in-process; object locals are serialized in-frame via the
+   * bounded serializer. `[unset]`/`undefined` locals are dropped as noise.
+   */
+  async getLocals(limits: SerializeLimits = DEFAULT_LIMITS): Promise<Record<string, unknown>> {
     const frame = this.topFrame()
     if (!frame) return {}
 
@@ -188,16 +182,20 @@ export class DebuggerSession {
       }) as any
       for (const p of r.result || []) {
         if (target[p.name] !== undefined) continue
-        if (!p.value) { target[p.name] = '[unset]'; continue }
+        if (!p.value) continue                       // drop [unset] — pure noise
         const v = p.value
         if (v.value !== undefined) {
-          target[p.name] = v.value
+          // Primitive — clamp long strings + redact secret keys in-process.
+          target[p.name] = clampPrimitive(p.name, v.value, limits)
         } else if (v.type === 'function') {
           target[p.name] = `[Function: ${v.description?.split('(')[0]?.trim() || 'anon'}]`
+        } else if (v.type === 'undefined') {
+          continue                                   // drop empty locals
         } else if (v.type === 'object' && v.objectId) {
           const name = p.name
+          if (limits.redact && SECRET_KEY_RE.test(name)) { target[name] = '[redacted]'; continue }
           deepResolves.push(
-            this.evalInFrame(name).then((er: any) => {
+            this.evalInFrame(name, { limits }).then((er: any) => {
               if (er?.result?.value !== undefined) {
                 target[name] = er.result.value
               } else {
@@ -386,4 +384,38 @@ export class DebuggerSession {
     this.currentPause = null
     await this.cdp.send('Debugger.resume')
   }
+}
+
+/**
+ * Unbounded, circular-safe deep serialization expression for `debugger_eval`.
+ * Intentionally NOT bounded — this is the drill-down escape hatch. Unwraps
+ * Vue ref()/Pinia $state and survives cycles, but keeps full depth/breadth.
+ */
+function deepEvalExpr(expr: string): string {
+  return `(function(__expr) {
+    try {
+      var v = __expr;
+      if (v && v.__v_isRef) v = v.value;
+      if (v && v.$state) v = JSON.parse(JSON.stringify(v.$state));
+      if (v && v.__v_raw) v = v.__v_raw;
+      if (v === null) return null;
+      if (v === undefined) return undefined;
+      if (typeof v === 'string') return v;
+      if (typeof v === 'number' || typeof v === 'boolean') return v;
+      if (typeof v === 'function') return '[Function: ' + (v.name || 'anon') + ']';
+      var seen = new WeakSet();
+      return JSON.parse(JSON.stringify(v, function(k, val) {
+        if (typeof val === 'object' && val !== null) {
+          if (val.__v_isRef) return val.value;
+          if (val.__v_raw) val = val.__v_raw;
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        if (typeof val === 'function') return '[Function: ' + (val.name || 'anon') + ']';
+        return val;
+      }));
+    } catch(e) {
+      return '[eval error] ' + e.message;
+    }
+  })(${expr})`
 }

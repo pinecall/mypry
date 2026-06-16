@@ -15,7 +15,9 @@
  */
 
 import { connect, dispose, type BrowserHandle, type ConnectOptions } from './connect.js';
-import { type RefMap } from './runtime.js';
+
+/** Map of snapshot ref id (`eN`) → resolvable selector (`aria-ref=eN`). */
+export type RefMap = Record<string, string>;
 
 export interface SessionState {
   vars: Record<string, string>;

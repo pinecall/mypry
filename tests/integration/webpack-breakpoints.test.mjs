@@ -355,11 +355,12 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
     await session.resume()
   })
 
-  it('locals show [unset] for variables not yet initialized', async () => {
+  it('drops uninitialized locals instead of emitting [unset]', async () => {
     const { session } = ctx
 
     // Line 9 is: const subtotal = cart.items.reduce(...)
-    // At line 9, subtotal/discount/total should be [unset] (not yet assigned)
+    // At line 9, subtotal/discount/total are not yet assigned — they should be
+    // DROPPED as noise (not surfaced as "[unset]").
     await session.setBreakpoint('app/api/cart/total/route.ts', 9)
     const result = await fireAndWaitPause(
       session, '/api/cart/total', { sessionId: 'test_unset' }
@@ -367,13 +368,13 @@ describe('webpack-internal breakpoints', { timeout: 300_000 }, () => {
     assert.ok(result.paused, 'should pause')
 
     const locals = await session.getLocals()
-    assert.equal(locals.subtotal, '[unset]', 'subtotal should be [unset] before assignment')
-    assert.equal(locals.discount, '[unset]', 'discount should be [unset] before assignment')
-    assert.equal(locals.total, '[unset]', 'total should be [unset] before assignment')
+    assert.equal(locals.subtotal, undefined, 'subtotal should be dropped before assignment')
+    assert.equal(locals.discount, undefined, 'discount should be dropped before assignment')
+    assert.equal(locals.total, undefined, 'total should be dropped before assignment')
 
     // But cart and sessionId should be set (assigned on lines 5-6)
-    assert.ok(locals.cart !== '[unset]', 'cart should be set')
-    assert.ok(locals.sessionId !== '[unset]', 'sessionId should be set')
+    assert.ok(locals.cart !== undefined, 'cart should be set')
+    assert.ok(locals.sessionId !== undefined, 'sessionId should be set')
 
     await session.resume()
   })

@@ -41,8 +41,13 @@ async function loadSourceMap(
         const json = Buffer.from(b64, 'base64').toString('utf8')
         consumer = await new SourceMapConsumer(JSON.parse(json) as RawSourceMap)
       } else {
-        // External file — resolve relative to the JS file
-        const dir = path.dirname(filePath)
+        // External file — resolve relative to the JS file on disk. Strip the
+        // file:// protocol + query first; otherwise path.resolve() mangles it
+        // and the .map never loads (this is why Turbopack chunks, which use
+        // external .map files, failed to reverse-resolve to TypeScript).
+        let fsPath = filePath.replace(/^file:\/\//, '').replace(/\?.*$/, '')
+        if (process.platform === 'win32' && fsPath.startsWith('/')) fsPath = fsPath.slice(1)
+        const dir = path.dirname(fsPath)
         const mapPath = path.resolve(dir, url)
         try {
           const mapContent = fs.readFileSync(mapPath, 'utf8')
@@ -50,7 +55,7 @@ async function loadSourceMap(
         } catch {
           // Also try .map appended to JS filename
           try {
-            const mapContent = fs.readFileSync(filePath + '.map', 'utf8')
+            const mapContent = fs.readFileSync(fsPath + '.map', 'utf8')
             consumer = await new SourceMapConsumer(JSON.parse(mapContent) as RawSourceMap)
           } catch { /* no map found */ }
         }
@@ -86,32 +91,22 @@ export async function resolveOriginalPosition(
     const pos = consumer.originalPositionFor({ line, column: col })
     if (pos.source && pos.line !== null) {
       let absoluteSource: string
+      const projectIdx = pos.source.indexOf('[project]/')
 
       if (filePath.includes('webpack-internal://')) {
         // webpack-internal URLs: path.dirname() produces garbage.
         // Source map sources look like: webpack://mypry-demo/./app/api/cart/total/route.ts?47a1
         // Strip the webpack:// prefix and query params to get a resolvable path.
-        let cleanSource = pos.source
+        const cleanSource = pos.source
           .replace(/^webpack:\/\/[^/]*\//, '')  // strip webpack://pkg-name/
           .replace(/^\.\/?/, '')                 // strip leading ./
           .replace(/\?.*$/, '')                  // strip ?47a1 query params
-
-        const cwd = process.cwd()
-        const candidates = [cwd]
-        let dir = cwd
-        for (let i = 0; i < 5; i++) {
-          dir = path.resolve(dir, '..')
-          candidates.push(dir)
-        }
-
-        absoluteSource = cleanSource // fallback: relative path
-        for (const root of candidates) {
-          const candidate = path.resolve(root, cleanSource)
-          if (fs.existsSync(candidate)) {
-            absoluteSource = candidate
-            break
-          }
-        }
+        absoluteSource = resolveAgainstRoots(cleanSource)
+      } else if (projectIdx !== -1) {
+        // Turbopack sources look like /turbopack/[project]/app/api/.../route.ts —
+        // strip up to the [project]/ marker to get the project-relative path.
+        const rel = pos.source.slice(projectIdx + '[project]/'.length).replace(/\?.*$/, '')
+        absoluteSource = resolveAgainstRoots(rel)
       } else {
         const dir = path.dirname(filePath)
         absoluteSource = path.resolve(dir, pos.source)
@@ -127,6 +122,25 @@ export async function resolveOriginalPosition(
   }
 
   return null
+}
+
+/**
+ * Resolve a project-relative source path (from a webpack/turbopack source map)
+ * to an absolute path on disk by trying cwd and its ancestors. Falls back to
+ * the relative path if nothing matches.
+ */
+function resolveAgainstRoots(relPath: string): string {
+  let dir = process.cwd()
+  const candidates = [dir]
+  for (let i = 0; i < 6; i++) {
+    dir = path.resolve(dir, '..')
+    candidates.push(dir)
+  }
+  for (const root of candidates) {
+    const candidate = path.resolve(root, relPath)
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return relPath
 }
 
 /**

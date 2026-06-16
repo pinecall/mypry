@@ -5,3 +5,7 @@ dist-test/
 *.tsbuildinfo
 *.tar.gz
 *.legacy.js
+
+# Local code-index caches (brainbank / megabrain)
+.brainbank/
+.megabrain/

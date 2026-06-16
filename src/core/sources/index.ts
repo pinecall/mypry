@@ -185,10 +185,28 @@ function findSourceInMap(
 
 /**
  * Check if a source map source name matches a file pattern.
+ *
+ * When the caller passes a path with a directory (e.g.
+ * "app/api/cart/total/route.ts"), match on the FULL path suffix — never on
+ * basename alone. Otherwise every `route.ts` in a multi-route app would
+ * collide (Turbopack bundles several routes per chunk, each sourced as
+ * `…/route.ts`). A bare basename ("route.ts") still matches by filename.
+ *
  * Strips query params (webpack adds cache busters like ?47a1).
  */
 function sourceMatches(source: string, filePattern: string, basename: string): boolean {
   const clean = source.replace(/\?.*$/, '')
-  const sBasename = clean.replace(/^.*[/\\]/, '')
-  return sBasename === basename || clean.endsWith(filePattern) || filePattern.endsWith(clean)
+
+  if (/[/\\]/.test(filePattern)) {
+    const cn = clean.replace(/\\/g, '/')
+    const fp = filePattern.replace(/\\/g, '/')
+    // The map source ends with the user's path…
+    if (cn.endsWith(fp)) return true
+    // …or the map source is itself a (shorter) path that the user's path ends with.
+    if (cn.includes('/') && fp.endsWith(cn)) return true
+    return false
+  }
+
+  // Bare basename — match by filename only.
+  return clean.replace(/^.*[/\\]/, '') === basename
 }

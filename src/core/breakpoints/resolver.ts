@@ -16,7 +16,7 @@
 import type { CDPClient } from '../cdp-client.js'
 import type { IScriptEntry, IResolvedLocation } from '../types.js'
 import { resolveSourceToCompiled, resolveTypeScriptBreakpoint } from '../sources/index.js'
-import { findTurbopackChunk } from '../sources/turbopack.js'
+import { isTurbopackChunkUrl } from '../sources/turbopack.js'
 import { findWebpackScript } from '../sources/webpack.js'
 import { matchScript } from '../sources/script-matcher.js'
 
@@ -56,15 +56,24 @@ export class BreakpointResolver {
       }
     }
 
-    // 2. Turbopack chunk
-    const turbo = findTurbopackChunk(this.scripts, filePattern, basename)
-    if (turbo && turbo.entry.sourceMapURL) {
-      const mapped = await resolveSourceToCompiled(turbo.entry, filePattern, line0)
-      if (mapped) {
+    // 2. Turbopack chunk — hash-named chunks (`chunks/_HASH._.js`) bundle
+    //    several modules; the file→chunk mapping lives only in the chunk's
+    //    sectioned source map, not the URL. Scan each chunk's map for this
+    //    file and pick the newest match (highest scriptId survives HMR).
+    {
+      let best: { idNum: number; url: string; line: number } | null = null
+      for (const [scriptId, entry] of this.scripts) {
+        if (!entry.url || !entry.sourceMapURL || !isTurbopackChunkUrl(entry.url)) continue
+        const mapped = await resolveSourceToCompiled(entry, filePattern, line0)
+        if (!mapped) continue
+        const idNum = parseInt(scriptId, 10) || 0
+        if (!best || idNum > best.idNum) best = { idNum, url: entry.url, line: mapped.line }
+      }
+      if (best) {
         return {
-          lineNumber: mapped.line,
+          lineNumber: best.line,
           method: 'byUrl',
-          urlRegex: escapeRegex(turbo.entry.url) + '.*',
+          urlRegex: escapeRegex(best.url.replace(/\?.*$/, '')) + '.*',
         }
       }
     }

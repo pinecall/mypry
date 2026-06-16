@@ -16,15 +16,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
+import { createRequire } from 'node:module'
 import { DebuggerToolKit, DEBUGGER_INSTRUCTIONS } from './fullstack-toolkit.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// Single source of version truth — read from package.json at runtime so
+// serverInfo can never drift from the published version again.
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string }
 
 async function main() {
   const kit = new DebuggerToolKit()
 
   const server = new Server(
-    { name: 'mypry', version: '0.1.0' },
+    { name: 'mypry', version },
     {
       capabilities: { tools: {} },
       instructions: DEBUGGER_INSTRUCTIONS,

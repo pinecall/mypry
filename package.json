@@ -1,6 +1,6 @@
 {
   "name": "mypry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Fullstack debugger for AI agents — debug Node.js + browser via MCP",
   "author": "Pinecall",
   "license": "MIT",
@@ -52,10 +52,12 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
-    "test": "npm run build && node --test tests/integration/webpack-breakpoints.test.mjs",
-    "test:integration": "npm run build && node --test tests/integration/webpack-breakpoints.test.mjs"
+    "test": "npm run build && node --test tests/serialize.test.mjs tests/state-locals.test.mjs tests/tool-output.test.mjs",
+    "test:integration": "npm run build && node --test tests/integration/*.test.mjs",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

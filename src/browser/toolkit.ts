@@ -1,13 +1,12 @@
 /**
- * Browser toolkit — AgentScript DSL for browser automation.
+ * Browser toolkit — thin Playwright wrapper for mypry's fullstack debugger.
  *
- * Internal module for mypry. Provides BrowserToolKit class that
- * wraps Playwright behind a simple parse → run pipeline.
+ * Internal module. Owns the browser session lifecycle and the ARIA snapshot.
+ * Page interaction itself goes through the JSON action runner in actions.ts
+ * (driven by fullstack-toolkit's debugger_browse), not this kit.
  */
 
 import { Session } from './session.js';
-import { parse } from './parser.js';
-import { run, type RefMap } from './runtime.js';
 
 // ── Tool definitions (internal API — used by fullstack-toolkit.ts) ──
 
@@ -28,24 +27,11 @@ export const BROWSER_TOOLS = [
   {
     name: 'browser_snapshot',
     description:
-      'Capture an accessibility (ARIA) snapshot of the current page as YAML. Every interactive element gets a stable description you can use as a selector in browser_run scripts. Re-snapshot after navigation.',
+      'Capture an accessibility (ARIA) snapshot of the current page as YAML. Every interactive element gets a stable description you can use as a selector in browser actions. Re-snapshot after navigation.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         scope: { type: 'string', description: 'CSS selector to scope the snapshot (default: whole body)' },
-      },
-    },
-  },
-  {
-    name: 'browser_run',
-    description:
-      'Execute an AgentScript snippet against the current page. One action per line. Targets are quoted selectors ("role:button=Save", "#id", "label:Email", "placeholder:Search"). On failure, snapshot again and retry.',
-    inputSchema: {
-      type: 'object' as const,
-      required: ['script'],
-      properties: {
-        script: { type: 'string', description: 'AgentScript source — one action per line' },
-        timeoutMs: { type: 'number', description: 'Per-step timeout (default 4000)' },
       },
     },
   },
@@ -83,8 +69,6 @@ export class BrowserToolKit {
           return this.handleConnect(args);
         case 'browser_snapshot':
           return this.handleSnapshot(args);
-        case 'browser_run':
-          return this.handleRun(args);
         case 'browser_disconnect':
           return this.handleDisconnect();
         default:
@@ -140,47 +124,6 @@ export class BrowserToolKit {
     };
   }
 
-  private async handleRun(args: Record<string, unknown>): Promise<ToolResult> {
-    const s = this.requireSession();
-    const script = args.script as string;
-    const timeoutMs = args.timeoutMs as number | undefined;
-
-    const { steps, errors } = parse(script);
-    if (errors.length) {
-      return this.okJson({
-        ok: false,
-        stepsRun: 0,
-        error: errors.map(e => `L${e.line}:${e.col} ${e.message}`).join('; '),
-        vars: s.state.vars,
-        needsSnapshot: false,
-      });
-    }
-
-    const result = await run(steps, {
-      page: s.page,
-      refMap: s.state.refMap,
-      vars: s.state.vars,
-      timeoutMs,
-    });
-
-    s.state.vars = result.vars;
-
-    const lastVerb = steps[result.completed.length - 1]?.verb;
-    const needsSnapshot =
-      !!result.failed ||
-      lastVerb === 'snapshot' ||
-      steps.some(st => ['goto', 'reload', 'back', 'forward'].includes(st.verb));
-
-    return this.okJson({
-      ok: !result.failed,
-      stepsRun: result.completed.length,
-      failedAt: result.failed?.step.line,
-      error: result.failed?.error,
-      vars: result.vars,
-      needsSnapshot,
-    });
-  }
-
   private async handleDisconnect(): Promise<ToolResult> {
     if (this.session) {
       await this.session.close().catch(() => {});
@@ -193,10 +136,6 @@ export class BrowserToolKit {
 
   private okJson(data: unknown): ToolResult {
     return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
-  }
-
-  private ok(text: string): ToolResult {
-    return { content: [{ type: 'text' as const, text }] };
   }
 
   private err(message: string): ToolResult {

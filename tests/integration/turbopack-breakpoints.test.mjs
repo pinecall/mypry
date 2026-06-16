@@ -41,14 +41,12 @@ beforeEach(async () => {
 
 afterEach(async () => {
   if (ctx) {
-    // Resume if paused
+    // Resume if paused, then clear breakpoints so they don't leak into the
+    // next test's warm-up (a stale breakpoint would pause warm-up requests).
     if (ctx.session.currentPause) {
       try { await ctx.session.resume() } catch {}
     }
-    // Remove all breakpoints
-    for (const [id] of ctx.session.breakpoints) {
-      try { await ctx.session.removeBreakpoint(id) } catch {}
-    }
+    try { await ctx.session.removeAllBreakpoints() } catch {}
     disconnectSession(ctx)
     ctx = null
   }
@@ -118,7 +116,7 @@ describe('turbopack breakpoints', () => {
     await session.resume()
   })
 
-  it('call stack includes multiple frames', async () => {
+  it('call stack is justMyCode by default, full with fullStack', async () => {
     const { session } = ctx
     await session.setBreakpoint('app/api/cart/total/route.ts', 9)
     const result = await fireAndWaitPause(session,
@@ -127,8 +125,19 @@ describe('turbopack breakpoints', () => {
     )
     assert.ok(result.paused, 'should pause')
 
-    const state = await snapshot(session)
-    assert.ok(state.call_stack.length > 1, 'should have multiple stack frames')
+    const justMine = await snapshot(session)
+    const full = await snapshot(session, { fullStack: true })
+
+    // Default: at least the paused frame, and no framework frames leak in.
+    assert.ok(justMine.call_stack.length >= 1, 'should have at least the paused frame')
+    for (const f of justMine.call_stack) {
+      assert.ok(
+        !/node_modules|^node:|\/next\/dist\/|\[turbopack\]/.test(f.file),
+        `framework frame leaked into justMyCode stack: ${f.file}`,
+      )
+    }
+    // fullStack includes at least as many frames (the hidden framework ones).
+    assert.ok(full.call_stack.length >= justMine.call_stack.length, 'fullStack ⊇ justMyCode')
 
     await session.resume()
   })

@@ -29,6 +29,10 @@ A real bug lives in *both*: the button click, the request payload, the handler, 
 
 ---
 
+> 📖 **Watch an agent use it:** [**a complete real-time debugging session**](examples/login-bug/README.md) — an agent finds a backend `403` bug by driving the browser and pausing the server in one session, with every real tool output shown.
+
+---
+
 ## Quick start (60 seconds)
 
 **1. Run your app with the inspector open.**
@@ -95,8 +99,8 @@ The agent sets a breakpoint by file and line. **No edits, no restart, no hot-rel
 debugger_set_breakpoint { file: "auth.ts", line: 47 }
 # trigger the code path...
 debugger_state → paused at auth.ts:47
-  locals: { user: { email: "admin", role: "viewer" }, token: "abc..." }
-  call_stack: [{ fn: "validateUser", file: "auth.ts", line: 47 }, ...]
+  locals: { user: { email: "admin", role: "viewer" }, token: "[redacted]" }
+  call_stack: [{ function: "validateUser", file: "auth.ts", line: 47 }, ...]
 ```
 
 This is the recommended approach — the agent doesn't touch your source code.
@@ -190,7 +194,7 @@ AI Agent ── stdio ──▶ mypry-bridge ── CDP ──▶ your app
 |------|-------------|
 | `debugger_connect` | Connect to V8 inspector + optionally launch a Playwright browser |
 | `debugger_disconnect` | Close everything |
-| `debugger_state` | Paused/running, file, line, locals (deep-serialized), closure vars, call stack, return value, TypeScript source window |
+| `debugger_state` | Paused/running, file, line, locals (bounded + secrets redacted), justMyCode call stack, return value, TypeScript source window. Drill in with `expand`/`depth`/`fullStack`. |
 | `debugger_set_breakpoint` | File + line (optional `condition`), exception breakpoints, logpoints (`logMessage`), hit count (`hitCount`) |
 | `debugger_breakpoints` | List or remove breakpoints (includes exception breakpoint state) |
 | `debugger_eval` | JS expression — `target: "backend"` (default) or `"browser"` |
@@ -308,6 +312,13 @@ mypry gives an AI agent `eval` access to both your Node.js process and a browser
 - Execute arbitrary JavaScript in your Node.js process (read env vars, access the filesystem, call `process.exit()`)
 - Execute arbitrary JavaScript in the browser page (access cookies, localStorage, DOM)
 - Set breakpoints that pause your application
+
+**Secret redaction.** `debugger_state` / `step` / `continue` automatically
+redact locals whose key looks like a secret (`password`, `token`,
+`authorization`, `cookie`, `apiKey`, `jwt`, …) to `[redacted]`, so credentials
+don't land in the transcript by accident. This is a noise/safety default, **not
+a security boundary**: `debugger_eval` is the explicit drill-down escape hatch
+and is never redacted — an agent that evaluates a secret by name still sees it.
 
 **Recommendations:**
 - **Development only.** Do not run mypry on production systems.

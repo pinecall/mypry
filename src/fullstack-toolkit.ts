@@ -14,9 +14,10 @@
 import { CDPClient } from './core/cdp-client.js'
 import { DebuggerSession } from './core/session.js'
 import { discoverTargets } from './core/targets.js'
-import { snapshot, cleanUrl, type PausedSnapshot } from './core/snapshot.js'
+import { snapshot, type SnapshotOpts } from './core/snapshot.js'
+import { DEFAULT_LIMITS } from './core/serialize.js'
 import { BrowserToolKit } from './browser/toolkit.js'
-import { runActions, type BrowserAction, type ActionResult } from './browser/actions.js'
+import { runActions, type BrowserAction } from './browser/actions.js'
 import { execSync } from 'node:child_process'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -41,8 +42,17 @@ export const TOOLS = [
   {
     name: 'debugger_state',
     description:
-      'Get the current state of both backend and browser. Backend: paused/running, file, line, function, locals, source window. Browser: current URL and title. Use this to orient yourself.',
-    inputSchema: { type: 'object' as const, properties: {} },
+      'Get the current state of both backend and browser. Backend: paused/running, file, line, function, locals (bounded + secrets redacted), source window, justMyCode call stack. Browser: current URL and title. Use this to orient yourself.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        expand: { type: 'string', description: 'Path to expand UNBOUNDED, e.g. "submission.vdfProof" — returns its full value in `expanded`.' },
+        fullStack: { type: 'boolean', description: 'Include framework (node_modules/internal) call-stack frames. Default: just your code.' },
+        depth: { type: 'number', description: 'Max object nesting in locals before collapsing (default: 4).' },
+        maxString: { type: 'number', description: 'Max string length before truncating (default: 1024).' },
+        redact: { type: 'boolean', description: 'Redact secret-looking keys (password/token/…). Default: true.' },
+      },
+    },
   },
   {
     name: 'debugger_browse',
@@ -56,7 +66,6 @@ export const TOOLS = [
           description: 'Array of action objects. Each has one key (verb) and value (args). Examples: { "click": "button Sign in" }, { "fill": ["textbox Email", "alice"] }, { "goto": "http://localhost:3000" }',
           items: { type: 'object' },
         },
-        script: { type: 'string', description: '(Deprecated) AgentScript DSL string. Prefer actions array.' },
         timeoutMs: { type: 'number', description: 'Per-action timeout in ms (default: 4000)' },
       },
     },
@@ -218,12 +227,16 @@ export const DEBUGGER_INSTRUCTIONS = [
   '   — or run `curl ... &` in the terminal',
   '4. debugger_state — see paused state:',
   '   • file, line, function name',
-  '   • locals (deep-serialized objects, not just "Object")',
-  '   • __closure__: variables from parent scopes (module imports, singletons)',
-  '   • call_stack: full call chain (who called this function)',
+  '   • locals — BOUNDED + summarized: req/res/sockets collapse to one line,',
+  '     secrets (password/token/…) are [redacted], deep/long values are capped.',
+  '     Need a full value? debugger_state { expand: "submission.vdfProof" }',
+  '     or debugger_eval { expr: "submission.vdfProof" } (unbounded).',
+  '   • call_stack: justMyCode by default (node_modules/internal hidden).',
+  '     debugger_state { fullStack: true } to see every frame.',
   '   • source_window: ±4 lines of ORIGINAL TypeScript (not compiled JS)',
   '   • return_value: value returned by the last function call (after step-over)',
-  '5. debugger_eval { expr: "request.body" } — backend variables',
+  '   • widen if needed: debugger_state { depth: 6, maxString: 4000 }',
+  '5. debugger_eval { expr: "request.body" } — backend variables (UNBOUNDED — full value)',
   '   debugger_eval { expr: "document.title", target: "browser" } — frontend DOM/state',
   '6. debugger_step { mode: "over" } — step through code',
   '   debugger_step { mode: "into" } — smart: auto-skips framework code (node_modules)',
@@ -312,6 +325,9 @@ export const DEBUGGER_INSTRUCTIONS = [
   '- debugger_inject is the easiest path — no restart, no flags. Just the app port.',
   '- debugger_browse auto-detects pauses — if a breakpoint fires during browser interaction, the response includes backend state.',
   '- debugger_continue waits 5s for next breakpoint. Returns {status: "running"} if nothing fires.',
+  '- State is BOUNDED + secrets [redacted] for cheap reads. debugger_eval is the',
+  '  UNBOUNDED escape hatch when you need a full value (it is never redacted).',
+  '- Call stacks are justMyCode by default (fullStack:true to include framework).',
   '- Source maps automatic — TypeScript paths in state, breakpoints, eval. Works with Vite, Turbopack, Webpack, tsc.',
   '- Auto-reconnect — survives process restarts (nodemon, NestJS --watch).',
   '- Vue/Pinia unwrap — ref() and $state auto-unwrapped in eval.',
@@ -323,7 +339,7 @@ export const DEBUGGER_INSTRUCTIONS = [
   '',
   'List all breakpoints:',
   '  debugger_breakpoints',
-  '  → [{ id: "1", file: "auth.ts", line: 47, condition: "..." }, ...]',
+  '  → [{ id: 1, file: "auth.ts", line: 47, kind: "breakpoint", condition: "..." }, ...]',
   '  → Also shows exception breakpoint state (all/uncaught/none).',
   '',
   'Remove a breakpoint:',
@@ -355,7 +371,8 @@ export const DEBUGGER_INSTRUCTIONS = [
   'DEBUGGER STATE — Output Format',
   '═══════════════════════════════════════════════════════',
   '',
-  'debugger_state when paused returns:',
+  'debugger_state when paused returns (locals BOUNDED, secrets [redacted],',
+  'call_stack justMyCode):',
   '  {',
   '    status: "paused",',
   '    file: "auth.service.ts",',
@@ -363,17 +380,22 @@ export const DEBUGGER_INSTRUCTIONS = [
   '    function: "validateUser",',
   '    locals: {',
   '      email: "admin@test.com",',
+  '      password: "[redacted]",',
   '      isMatch: false,',
-  '      user: { id: 1, role: "viewer" }',
+  '      user: { id: 1, role: "viewer" },',
+  '      req: { "@": "IncomingMessage", method: "POST", url: "/login", headers: "9 headers" }',
   '    },',
-  '    __closure__: { config: { jwtSecret: "..." }, db: "[Pool]" },',
   '    call_stack: [',
-  '      { fn: "validateUser", file: "auth.service.ts", line: 47 },',
-  '      { fn: "login", file: "auth.controller.ts", line: 23 }',
+  '      { function: "validateUser", file: "auth.service.ts", line: 47 },',
+  '      { function: "login", file: "auth.controller.ts", line: 23 }',
   '    ],',
-  '    source_window: "45: ...\\n46: \\n47: → if (!isMatch) {\\n48: ...",',
+  '    source_window: [ { line: 47, text: "if (!isMatch) {", current: true }, ... ],',
   '    return_value: null',
   '  }',
+  '',
+  'Need a redacted/bounded value in full? debugger_state { expand: "req.headers" }',
+  'returns { ..., expanded: { path: "req.headers", value: <full> } }, or just',
+  'debugger_eval { expr: "req.headers" }.',
   '',
   'debugger_state when running:',
   '  { status: "running" }',
@@ -413,7 +435,7 @@ export class DebuggerToolKit {
     try {
       switch (name) {
         case 'debugger_connect':    return this.handleConnect(args)
-        case 'debugger_state':      return this.handleState()
+        case 'debugger_state':      return this.handleState(args)
         case 'debugger_browse':     return this.handleBrowse(args)
         case 'debugger_snapshot':   return this.handleSnapshot(args)
         case 'debugger_eval':       return this.handleEval(args)
@@ -510,9 +532,9 @@ export class DebuggerToolKit {
     if (frontend) {
       this.browserKit = new BrowserToolKit()
       await this.browserKit.call('browser_connect', { headless })
-      await this.browserKit.call('browser_run', { script: `goto ${frontend}` })
+      const page = this.browserKit.page
+      if (page) await runActions([{ goto: frontend }], page)
       result.browser = { connected: true, url: frontend }
-      result.syntax_hint = 'Call debugger_snapshot to see the page, then debugger_browse to interact.'
     }
 
     return this.okJson(result)
@@ -545,15 +567,9 @@ export class DebuggerToolKit {
       } catch {}
 
       throw new Error(
-        `Port 9229 is already in use by ${occupier}. ` +
-        `inject requires port 9229 to be free.\n\n` +
-        `Options:\n` +
-        `  1. Start your app with a specific inspector port:\n` +
-        `     node --inspect=9230 your-app.js\n` +
-        `     Then use: debugger_connect { port: 9230 }\n\n` +
-        `  2. Kill the process using port 9229:\n` +
-        `     lsof -ti :9229 | xargs kill\n` +
-        `     Then retry: debugger_inject { appPort: ${appPort ?? 'PORT'} }`
+        `inject needs port 9229 free, but it is held by ${occupier} — ` +
+        `free it (lsof -ti :9229 | xargs kill) or start the app with ` +
+        `node --inspect=9230 and use debugger_connect { port: 9230 }.`
       )
     }
 
@@ -582,36 +598,30 @@ export class DebuggerToolKit {
     // Step 5: Connect
     const result = await this.handleConnect({ port: inspectorPort, frontend, headless })
     const data = JSON.parse((result.content as any)[0].text)
-    data.injected = { pid, appPort: appPort ?? null, inspectorPort, process: processInfo || undefined }
+    const injected: Record<string, unknown> = { pid, inspectorPort }
+    if (appPort) injected.appPort = appPort
+    const program = entryScriptName(processInfo)   // basename only — drop the loader soup
+    if (program) injected.program = program
+    data.injected = injected
     return this.okJson(data)
   }
 
-  private async handleState(): Promise<ToolResult> {
+  private async handleState(args: Record<string, unknown> = {}): Promise<ToolResult> {
     const result: Record<string, unknown> = {}
 
     // Backend state
     if (this.session) {
-      result.backend = await snapshot(this.session)
+      result.backend = await snapshot(this.session, this.snapshotOpts(args))
     } else {
       result.backend = { status: 'disconnected' }
     }
 
-    // Browser state
-    if (this.browserKit) {
+    // Browser state — one direct page.evaluate (no DSL).
+    if (this.browserKit?.page) {
       try {
-        const evalResult = await this.browserKit.call('browser_run', {
-          script: 'extract "html" attr "title" as _title',
-        })
-        const vars = JSON.parse(evalResult.content[0].text)?.vars || {}
-        // Just get URL from a simple eval
-        const urlResult = await this.browserKit.call('browser_run', {
-          script: 'eval "window.location.href" as _url',
-        })
-        const urlVars = JSON.parse(urlResult.content[0].text)?.vars || {}
-        result.browser = {
-          url: urlVars._url || 'unknown',
-          title: vars._title || 'unknown',
-        }
+        result.browser = await this.browserKit.page.evaluate(
+          () => ({ url: location.href, title: document.title }),
+        )
       } catch {
         result.browser = { status: 'connected' }
       }
@@ -620,63 +630,66 @@ export class DebuggerToolKit {
     return this.okJson(result)
   }
 
+  /** Build snapshot options from tool args (depth/redact/expand/fullStack). */
+  private snapshotOpts(args: Record<string, unknown>): SnapshotOpts {
+    const opts: SnapshotOpts = {}
+    if (args.fullStack === true) opts.fullStack = true
+    if (typeof args.expand === 'string') opts.expand = args.expand
+
+    let custom = false
+    const limits = { ...DEFAULT_LIMITS }
+    if (typeof args.depth === 'number') { limits.maxDepth = args.depth; custom = true }
+    if (typeof args.maxKeys === 'number') { limits.maxKeys = args.maxKeys; custom = true }
+    if (typeof args.maxString === 'number') { limits.maxString = args.maxString; custom = true }
+    if (args.redact === false) { limits.redact = false; custom = true }
+    if (custom) opts.limits = limits
+
+    return opts
+  }
+
   private async handleBrowse(args: Record<string, unknown>): Promise<ToolResult> {
     if (!this.browserKit) {
       throw new Error('No browser connected. Call debugger_connect with a frontend URL first.')
     }
+    const page = this.browserKit.page
+    if (!page) throw new Error('No browser page available')
 
     const actions = args.actions as BrowserAction[] | undefined
-    const script = args.script as string | undefined
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error('"actions" (a non-empty JSON array) is required.')
+    }
     const timeoutMs = (args.timeoutMs as number) || 4000
 
-    if (!actions && !script) {
-      throw new Error('Either "actions" (JSON array) or "script" (deprecated DSL string) is required.')
-    }
-
-    // Remember if we were already paused
     const wasPaused = !!this.session?.currentPause
 
-    let browserData: Record<string, unknown>
+    // Arm the pause wait BEFORE running actions, so a breakpoint that fires
+    // mid-action is never missed. Deterministic: we await the actual
+    // Debugger.paused event, bounded by timeoutMs — no arbitrary sleep.
+    const pausePromise = this.session && !wasPaused ? this.session._waitRawPause() : null
 
-    if (actions) {
-      // ── New JSON actions path ──
-      const page = this.browserKit.page
-      if (!page) throw new Error('No browser page available')
-      const actionResult = await runActions(actions, page, timeoutMs)
-      browserData = {
-        ok: !actionResult.error,
-        completed: actionResult.completed,
-        total: actionResult.total,
-        error: actionResult.error,
-        failedAt: actionResult.failedAt,
-        needsSnapshot: actionResult.needsSnapshot,
-      }
-    } else {
-      // ── Legacy AgentScript DSL fallback ──
-      const browserResult = await this.browserKit.call('browser_run', { script, timeoutMs })
-      browserData = JSON.parse(browserResult.content[0].text)
+    const r = await runActions(actions, page, timeoutMs)
+    const browser: Record<string, unknown> = {
+      ok: !r.error,
+      completed: r.completed,
+      total: r.total,
+      needsSnapshot: r.needsSnapshot,
     }
+    if (r.error) { browser.error = r.error; browser.failedAt = r.failedAt }
 
-    const result: Record<string, unknown> = { browser: browserData }
+    const result: Record<string, unknown> = { browser }
 
-    // Check if a backend breakpoint fired during the browser interaction
-    if (this.session && !wasPaused) {
-      // Wait briefly for a breakpoint to propagate
-      const pausePromise = this.session._waitRawPause()
-      const raced = await Promise.race([
-        pausePromise.then(() => 'paused'),
-        sleep(1500).then(() => 'timeout'),
-      ])
-
-      if (raced === 'paused' && this.session.currentPause) {
+    // Did a backend breakpoint fire during the interaction?
+    if (this.session && !wasPaused && pausePromise) {
+      const fired = this.session.currentPause
+        ? true
+        : await Promise.race([
+            pausePromise.then(() => true),
+            sleep(timeoutMs).then(() => false),
+          ])
+      if (fired && this.session.currentPause) {
         await this.session._skipPryFrames()
-        const state = await snapshot(this.session)
-        result.backend = state
+        result.backend = await snapshot(this.session)
       }
-    } else if (this.session?.currentPause && !wasPaused) {
-      // Already paused during script execution
-      const state = await snapshot(this.session)
-      result.backend = state
     }
 
     return this.okJson(result)
@@ -689,6 +702,12 @@ export class DebuggerToolKit {
     const result = await this.browserKit.call('browser_snapshot', {
       scope: args.scope as string | undefined,
     })
+    // Trim ARIA-tree noise: drop `text:` lines that just repeat the previous
+    // node's accessible name, and soft-cap very large pages.
+    const raw = result.content?.[0]?.text
+    if (typeof raw === 'string') {
+      result.content[0].text = dedupAriaTree(raw)
+    }
     return result
   }
 
@@ -713,24 +732,23 @@ export class DebuggerToolKit {
       }
     }
 
-    // Backend eval — runs in Node.js inspector
+    // Backend eval — runs in Node.js inspector. Unbounded on purpose: this is
+    // the drill-down escape hatch, so the full value comes back.
     const session = this.requireSession()
     const r = await session.evalInFrame(expr) as any
     if (r.exceptionDetails) {
-      return this.okJson({
-        ok: false,
-        target: 'backend',
-        error: r.exceptionDetails.text,
-        description: r.result?.description,
-      })
+      const out: Record<string, unknown> = { ok: false, target: 'backend', error: r.exceptionDetails.text }
+      if (r.result?.description) out.description = r.result.description
+      return this.okJson(out)
     }
-    return this.okJson({
+    const out: Record<string, unknown> = {
       ok: true,
       target: 'backend',
-      type: r.result.type,
-      value: r.result.value !== undefined ? r.result.value : null,
-      description: r.result.description ?? null,
-    })
+      value: r.result.value !== undefined ? r.result.value : (r.result.description ?? null),
+    }
+    // `type` only adds signal for non-objects (string/number/boolean/etc).
+    if (r.result.type && r.result.type !== 'object') out.type = r.result.type
+    return this.okJson(out)
   }
 
   private async handleStep(args: Record<string, unknown>): Promise<ToolResult> {
@@ -812,12 +830,11 @@ export class DebuggerToolKit {
       await session.breakpoints.remove(args.remove as number)
     }
 
-    const breakpoints = session.breakpoints.list().map(bp => ({
-      id: bp.id,
-      file: bp.file,
-      line: bp.line,
-      condition: bp.condition || null,
-    }))
+    const breakpoints = session.breakpoints.list().map(bp => {
+      const out: Record<string, unknown> = { id: bp.id, file: bp.file, line: bp.line, kind: bp.kind }
+      if (bp.condition) out.condition = bp.condition
+      return out
+    })
 
     return this.okJson({ breakpoints, exceptionBreakpoint: session.exceptions.getMode() })
   }
@@ -877,6 +894,50 @@ export class DebuggerToolKit {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms))
+}
+
+/**
+ * Pull a short, human-useful program name out of a full process command
+ * line (drops the `--require .../tsx/preflight.cjs --import .../loader.mjs`
+ * soup). Returns the entry script's basename, or '' if none is obvious.
+ */
+function entryScriptName(cmd: string): string {
+  if (!cmd) return ''
+  const tokens = cmd.trim().split(/\s+/)
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    if (/\.(c|m)?[jt]s$/.test(tokens[i])) {
+      return tokens[i].split(/[\\/]/).pop() || ''
+    }
+  }
+  return ''
+}
+
+/**
+ * Trim ARIA-snapshot YAML: drop standalone `text:` nodes that merely repeat
+ * the immediately-preceding element's accessible name, and soft-cap huge
+ * pages with a `…+N more nodes` marker.
+ */
+function dedupAriaTree(yaml: string, maxNodes = 200): string {
+  const lines = yaml.split('\n')
+  const out: string[] = []
+  let prevName: string | null = null
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const textMatch = trimmed.match(/^-\s+text:\s*(.+)$/)
+    if (textMatch && prevName !== null) {
+      const val = textMatch[1].trim().replace(/^"|"$/g, '')
+      if (val === prevName) continue   // duplicate of the previous node's name
+    }
+    out.push(line)
+    const nameMatch = trimmed.match(/^-\s+\w+\s+"([^"]*)"/)
+    prevName = nameMatch ? nameMatch[1] : null
+  }
+  if (out.length > maxNodes) {
+    const kept = out.slice(0, maxNodes)
+    kept.push(`  - "…+${out.length - maxNodes} more nodes"`)
+    return kept.join('\n')
+  }
+  return out.join('\n')
 }
 
 // ── Inject helpers (cross-platform) ────────────────────────────────────
