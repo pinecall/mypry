@@ -1,16 +1,16 @@
 {
   "name": "mypry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Fullstack debugger for AI agents — debug Node.js + browser via MCP",
-  "author": "Pinecall",
+  "author": "bernatch22",
   "license": "MIT",
-  "homepage": "https://github.com/pinecall/mypry#readme",
+  "homepage": "https://github.com/bernatch22/mypry#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pinecall/mypry.git"
+    "url": "git+https://github.com/bernatch22/mypry.git"
   },
   "bugs": {
-    "url": "https://github.com/pinecall/mypry/issues"
+    "url": "https://github.com/bernatch22/mypry/issues"
   },
   "keywords": [
     "debugger",

@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-01
+
 ### Added
 - **CI** (`.github/workflows/ci.yml`) covering everything as separate jobs:
   build + fast suite on Node 22/24, `debugger_inject` e2e, fullstack browser
@@ -12,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `tests/integration/inject.test.mjs` and `tests/integration/fullstack.test.mjs`
   (the latter drives the `examples/login-bug` app: browser click → backend
   pause), plus `test:inject` / `test:fullstack` / `test:nextjs` npm scripts.
+
+### Changed
+- **Repository moved** to `bernatch22/mypry` (the `pinecall/mypry` URL still
+  redirects); `author`, `homepage`, `repository` and `bugs` updated to match.
 
 ## [0.2.0] — 2026-06-16
 
