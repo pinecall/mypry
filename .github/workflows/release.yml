@@ -52,6 +52,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
+      # Trusted Publishing (OIDC registry auth) needs npm >= 11.5.1 — the
+      # runner's bundled npm (10.x on Node 22) predates the feature entirely
+      # and silently falls back to an anonymous publish, which 404s.
+      - run: npm install -g npm@latest && npm --version
       - name: publish
         run: |
           # a tag like v0.3.0-beta.1 must not become `latest`
